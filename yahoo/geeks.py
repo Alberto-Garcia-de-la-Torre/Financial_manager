@@ -9,7 +9,7 @@ end_date = datetime(2021, 1, 1)
 
 # get the data
 data = yf.download('SPY', start = start_date,
-                   end = end_date, interval="60m")
+                   end = end_date)
 
 # display
 plt.figure(figsize = (20,10))
