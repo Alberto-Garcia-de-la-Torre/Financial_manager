@@ -1,0 +1,24 @@
+// Esto es un comentario de una sola línea
+let x = 10;
+int y = 20;
+float z = 3.14;
+character c = 'a';
+boolean b = true;
+function add(x, y) {
+    return x + y;
+}
+/* 
+    Esto es un comentario de múltiples líneas
+    que abarca varias líneas
+*/
+if (x < y) {
+    return true;
+} else {
+    return false;
+}
+null
+0b101010
+0o755
+0xFF
+-12345
+3.14
