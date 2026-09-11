@@ -1,0 +1,18 @@
+[Unit]
+Description=Sixty Sessions - daily roadmap step
+Documentation=file:%h/Documentos/Personal/Financial_manager/automation/README.md
+
+[Timer]
+# Local time (Europe/Madrid). install.sh writes this from RUN_TIME.
+OnCalendar=*-*-* __RUN_TIME__:00
+# If the machine was asleep or off at the scheduled moment, run as soon
+# as it is back. Two months of daily work should not lose a day to a
+# closed laptop lid.
+Persistent=true
+# Spread the load a little so it never lands on the exact second.
+RandomizedDelaySec=300
+AccuracySec=1min
+Unit=finmgr-roadmap.service
+
+[Install]
+WantedBy=timers.target

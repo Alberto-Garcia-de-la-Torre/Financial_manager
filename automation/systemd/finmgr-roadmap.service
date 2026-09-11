@@ -1,0 +1,39 @@
+[Unit]
+Description=Sixty Sessions - implement one roadmap step
+Documentation=file:%h/Documentos/Personal/Financial_manager/automation/README.md
+# Don't bother starting if the machine has no network; the timer's
+# Persistent=true will catch up on the next boot instead.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO_DIR__
+ExecStart=/usr/bin/python3 __REPO_DIR__/automation/roadmap_runner.py run
+
+# `claude` and user-level tools live in ~/.local/bin, which a systemd
+# user unit does not inherit.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+# So notify-send can reach the desktop session.
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+
+# A step gets an hour by default (STEP_TIMEOUT); give the unit headroom
+# on top for git, tests and the tracker sync.
+TimeoutStartSec=5400
+
+# One retry, half an hour later, for a transient network or API failure.
+# A genuine step failure is recorded and not retried - it needs a human.
+Restart=on-failure
+RestartSec=1800
+StartLimitBurst=2
+
+# Modest hardening: this runs unattended and writes code.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
