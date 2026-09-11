@@ -1,0 +1,5 @@
+# The runner's own bytecode must never show up in `git status` — the
+# verifier treats any change under automation/ as the agent going
+# out of bounds, and would fail an otherwise good day.
+__pycache__/
+*.pyc
