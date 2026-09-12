@@ -2,9 +2,14 @@
 __pycache__/
 *.pyc
 
+# Editable-install / build artefacts
+*.egg-info/
+build/
+dist/
+
 # Environment
 .venv/
 .env
 
-# Market data never belongs in git
-data/
+# Market data never belongs in git (anchored: finmgr/data/ is source code)
+/data/

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finmgr"
+version = "0.1.0"
+description = "Personal quantitative research tool: ingest, score and backtest a 100-company universe."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Alberto Garcia de la Torre", email = "alberto@prompt2print.xyz" },
+]
+
+# Pinned on purpose: this project runs unattended every evening for two months.
+# A silent upgrade of pandas or yfinance mid-roadmap is a debugging session
+# nobody asked for. Bump deliberately, never incidentally.
+dependencies = [
+    "yfinance==1.7.0",
+    "pandas==3.0.5",
+    "numpy==2.4.6",
+    "pyarrow==25.0.1",
+    "duckdb==1.5.5",
+    "scikit-learn==1.9.1",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "typer==0.27.2",
+    "rich==15.0.0",
+    "matplotlib==3.11.2",
+    "pytest==9.1.1",
+]
+
+[project.urls]
+Repository = "https://github.com/Alberto-Garcia-de-la-Torre/Financial_manager"
+
+[tool.setuptools.packages.find]
+include = ["finmgr*"]
