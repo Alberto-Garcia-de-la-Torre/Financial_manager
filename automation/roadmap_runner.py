@@ -707,6 +707,17 @@ def cmd_run(cfg, args):
         msg = "; ".join(p.splitlines()[0] for p in problems)
         for p in problems:
             warn(p)
+        # Record the attempt. Without this the systemd retry half an hour later
+        # finds nothing in state, runs the same blocked preflight and notifies
+        # again - every thirty minutes, for as long as the problem goes
+        # unfixed. With it the retry hits the "already ran today" guard and
+        # exits quietly, so you are told once a day instead.
+        state["runs"].append({
+            "day": step.n, "status": "blocked",
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "title": step.title, "reason": msg, "log": None,
+        })
+        save_state(state)
         notify(cfg, "Roadmap runner blocked", msg, urgent=True)
         return 1
 
@@ -721,100 +732,163 @@ def cmd_run(cfg, args):
         git(repo, "checkout", "-B", step.branch)
         info(f"  branch: {step.branch}")
 
-    log_path = LOG_DIR / f"day-{step.n:02d}-{datetime.now():%Y%m%d-%H%M%S}.log"
-    info(f"  log:    {log_path}")
-    info("  running agent...")
+    try:
+        log_path = LOG_DIR / f"day-{step.n:02d}-{datetime.now():%Y%m%d-%H%M%S}.log"
+        info(f"  log:    {log_path}")
+        info("  running agent...")
 
-    ok, text, reason = run_agent(cfg, prompt, log_path)
-    report = parse_report(text)
-    changed = []
+        ok, text, reason = run_agent(cfg, prompt, log_path)
+        report = parse_report(text)
+        changed = []
 
-    if ok and report.get("status", "").upper() == "BLOCKED":
-        ok = False
-        reason = "agent reported BLOCKED: " + (report.get("notes") or "no reason given")
+        if ok and report.get("status", "").upper() == "BLOCKED":
+            ok = False
+            reason = "agent reported BLOCKED: " + (report.get("notes") or "no reason given")
 
-    if ok:
-        ok, vreason, changed = verify(cfg, repo)
+        if ok:
+            ok, vreason, changed = verify(cfg, repo)
+            if not ok:
+                reason = vreason
+
         if not ok:
-            reason = vreason
+            record_failure(cfg, state, step, reason, log_path, branch_mode, repo)
+            return 1
 
-    if not ok:
-        record_failure(cfg, state, step, reason, log_path, branch_mode, repo)
-        return 1
+        summary = report.get("summary") or f"implement day {step.n}"
+        subject = f"day {step.n:02d}: {summary}"[:72]
+        message = "\n".join([
+            subject, "",
+            f"Roadmap day {step.n} of {len(steps)} - {step.title}",
+            f"Phase {step.phase_n}: {step.phase_title}",
+            "",
+            f"Acceptance: {step.check}",
+            f"Verified:   {report.get('verified') or 'see runner log'}",
+        ] + ([f"Notes:      {report['notes']}"] if report.get("notes") else []) + [
+            "",
+            f"{TRAILER} {step.n}",
+            f"Runner-Log: {log_path.name}",
+            "",
+            "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+        ])
 
-    summary = report.get("summary") or f"implement day {step.n}"
-    subject = f"day {step.n:02d}: {summary}"[:72]
-    message = "\n".join([
-        subject, "",
-        f"Roadmap day {step.n} of {len(steps)} - {step.title}",
-        f"Phase {step.phase_n}: {step.phase_title}",
-        "",
-        f"Acceptance: {step.check}",
-        f"Verified:   {report.get('verified') or 'see runner log'}",
-    ] + ([f"Notes:      {report['notes']}"] if report.get("notes") else []) + [
-        "",
-        f"{TRAILER} {step.n}",
-        f"Runner-Log: {log_path.name}",
-        "",
-        "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>",
-    ])
+        git(repo, "add", "-A", "--", ".", ":!data")
+        git(repo, "commit", "-m", message)
+        sha = git(repo, "rev-parse", "--short", "HEAD")
+        info(f"  committed {sha}: {subject}")
 
-    git(repo, "add", "-A", "--", ".", ":!data")
-    git(repo, "commit", "-m", message)
-    sha = git(repo, "rev-parse", "--short", "HEAD")
-    info(f"  committed {sha}: {subject}")
+        merged = False
+        if branch_mode == "branch" and flag(cfg, "AUTO_MERGE"):
+            merged, mreason = merge_into_base(cfg, repo, step)
+            if merged:
+                info(f"  merged into {cfg['BASE_BRANCH']}")
+            else:
+                warn(f"auto-merge failed, work stays on {step.branch}: {mreason}")
 
-    merged = False
-    if branch_mode == "branch" and flag(cfg, "AUTO_MERGE"):
-        merged, mreason = merge_into_base(cfg, repo, step)
-        if merged:
-            info(f"  merged into {cfg['BASE_BRANCH']}")
+        pushed = False
+        if flag(cfg, "PUSH"):
+            target = step.branch if branch_mode == "branch" and not merged else cfg["BASE_BRANCH"]
+            r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", target],
+                               capture_output=True, text=True)
+            pushed = r.returncode == 0
+            if pushed:
+                info(f"  pushed to origin/{target}")
+            else:
+                detail = (r.stderr or "").strip().splitlines()
+                warn("push failed: " + (detail[-1] if detail else "unknown error"))
+
+        pr_url = ""
+        if pushed and not merged and branch_mode == "branch" and flag(cfg, "OPEN_PR"):
+            r = subprocess.run(
+                ["gh", "pr", "create", "--fill", "--base", cfg["BASE_BRANCH"],
+                 "--head", step.branch, "--title", subject],
+                cwd=repo, capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                pr_url = r.stdout.strip().splitlines()[-1]
+                info(f"  PR: {pr_url}")
+
+        if branch_mode == "branch":
+            git(repo, "checkout", cfg["BASE_BRANCH"], check=False)
+
+        state["runs"].append({
+            "day": step.n, "status": "done",
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "title": step.title, "summary": summary, "commit": sha,
+            "branch": step.branch if branch_mode == "branch" and not merged
+                      else cfg["BASE_BRANCH"],
+            "merged": merged,
+            "pushed": pushed, "pr": pr_url, "log": log_path.name,
+            "changed": len(changed),
+        })
+        save_state(state)
+
+        tick_artifact(cfg, step, summary)
+        remaining = len(steps) - len(completed_days(state))
+
+        # "Done" must not imply the work is safely off this machine.
+        stranded = flag(cfg, "PUSH") and not pushed
+        if stranded:
+            warn("committed but NOT pushed - the work is only on this machine")
+            notify(cfg, f"Day {step.n:02d} done, NOT PUSHED - {step.title}",
+                   f"{summary}\nThe commit is only on this machine.\n"
+                   f"{remaining} sessions left", urgent=True)
         else:
-            warn(f"auto-merge failed, work stays on {step.branch}: {mreason}")
+            notify(cfg, f"Day {step.n:02d} done - {step.title}",
+                   f"{summary}\n{remaining} sessions left")
+        info(f"  done. {remaining} sessions remaining.")
+        return 0
+    except BaseException as exc:
+        # Any unplanned exit at all: a git command that called die(), a bug in
+        # here, Ctrl-C, the machine going down mid-run. Without this the repo is
+        # left sitting on the day branch with uncommitted changes and nothing
+        # written to state, and strict preflight then blocks every remaining
+        # evening with nobody watching.
+        reason = f"runner exited unexpectedly: {type(exc).__name__}: {exc}".strip()
+        try:
+            rescue(cfg, state, step, reason, log_path, branch_mode, repo)
+        except BaseException as inner:   # never mask the original fault
+            warn(f"cleanup after that failure also failed: {inner}")
+        raise
 
-    pushed = False
-    if flag(cfg, "PUSH"):
-        target = step.branch if branch_mode == "branch" and not merged else cfg["BASE_BRANCH"]
-        r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", target],
-                           capture_output=True, text=True)
-        pushed = r.returncode == 0
-        if pushed:
-            info(f"  pushed to origin/{target}")
-        else:
-            detail = (r.stderr or "").strip().splitlines()
-            warn("push failed: " + (detail[-1] if detail else "unknown error"))
 
-    pr_url = ""
-    if pushed and not merged and branch_mode == "branch" and flag(cfg, "OPEN_PR"):
-        r = subprocess.run(
-            ["gh", "pr", "create", "--fill", "--base", cfg["BASE_BRANCH"],
-             "--head", step.branch, "--title", subject],
-            cwd=repo, capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            pr_url = r.stdout.strip().splitlines()[-1]
-            info(f"  PR: {pr_url}")
+def day_in_git(repo: Path, day: int) -> bool:
+    """Has this day's work already been committed somewhere in the repo?"""
+    out = git(repo, "log", "--all", "-n", "300", "--format=%B%x1e", check=False)
+    return bool(re.search(rf"^{TRAILER}\s*{day}\b", out, re.MULTILINE))
 
-    if branch_mode == "branch":
-        git(repo, "checkout", cfg["BASE_BRANCH"], check=False)
 
-    state["runs"].append({
-        "day": step.n, "status": "done",
-        "at": datetime.now().isoformat(timespec="seconds"),
-        "title": step.title, "summary": summary, "commit": sha,
-        "branch": step.branch if branch_mode == "branch" and not merged
-                  else cfg["BASE_BRANCH"],
-        "merged": merged,
-        "pushed": pushed, "pr": pr_url, "log": log_path.name,
-        "changed": len(changed),
-    })
-    save_state(state)
+def rescue(cfg, state, step, reason, log_path, branch_mode, repo):
+    """Put the repo back the way preflight expects after an unplanned exit."""
+    warn(f"day {step.n} ended unexpectedly: {reason}")
 
-    tick_artifact(cfg, step, summary)
-    remaining = len(steps) - len(completed_days(state))
-    notify(cfg, f"Day {step.n:02d} done - {step.title}",
-           f"{summary}\n{remaining} sessions left")
-    info(f"  done. {remaining} sessions remaining.")
-    return 0
+    # Whatever else happens here, the tree has to end up clean and on the base
+    # branch, or strict preflight blocks every remaining evening. A leftover
+    # dirty tree therefore always goes down the record_failure path, which
+    # parks it as a WIP commit - even if the day's own commit did land.
+    dirty = bool(git(repo, "status", "--porcelain", check=False))
+
+    if day_in_git(repo, step.n) and not dirty:
+        # The commit landed; only the bookkeeping was lost. `resync` would
+        # reach the same conclusion, so record it now rather than let tomorrow
+        # redo a day that is already finished.
+        sha = git(repo, "rev-parse", "--short", "HEAD", check=False)
+        if branch_mode == "branch":
+            git(repo, "checkout", cfg["BASE_BRANCH"], check=False)
+        state["runs"].append({
+            "day": step.n, "status": "done",
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "title": step.title,
+            "summary": "recovered after an unexpected exit",
+            "commit": sha,
+            "branch": step.branch if branch_mode == "branch" else cfg["BASE_BRANCH"],
+            "merged": False, "pushed": False, "pr": "",
+            "log": log_path.name, "changed": 0,
+        })
+        save_state(state)
+        notify(cfg, f"Day {step.n:02d} committed, but the runner crashed",
+               "The work is in git. Check it and push it by hand.", urgent=True)
+        return
+
+    record_failure(cfg, state, step, reason, log_path, branch_mode, repo)
 
 
 def record_failure(cfg, state, step, reason, log_path, branch_mode, repo):

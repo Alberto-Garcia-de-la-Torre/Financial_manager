@@ -6,6 +6,13 @@ Documentation=file:%h/Documentos/Personal/Financial_manager/automation/README.md
 Wants=network-online.target
 After=network-online.target
 
+# Rate limiting belongs in [Unit], and BOTH halves must be set here: left to
+# its 10-second default, StartLimitIntervalSec means a retry 30 minutes later
+# is always outside the window, the counter resets, and StartLimitBurst never
+# trips. Two hours covers the one retry below and nothing else.
+StartLimitIntervalSec=7200
+StartLimitBurst=2
+
 [Service]
 Type=oneshot
 WorkingDirectory=__REPO_DIR__
@@ -23,10 +30,10 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 TimeoutStartSec=5400
 
 # One retry, half an hour later, for a transient network or API failure.
-# A genuine step failure is recorded and not retried - it needs a human.
+# A genuine step failure is recorded and not retried - it needs a human, and
+# the runner's "already ran today" guard makes the retry exit quietly anyway.
 Restart=on-failure
 RestartSec=1800
-StartLimitBurst=2
 
 # Modest hardening: this runs unattended and writes code.
 NoNewPrivileges=true
