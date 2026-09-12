@@ -49,6 +49,7 @@ DEFAULTS = {
     "BASE_BRANCH": "main",
     "BRANCH_MODE": "branch",
     "PUSH": "1",
+    "AUTO_MERGE": "0",
     "OPEN_PR": "0",
     "NOTIFY": "1",
     "ARTIFACT_URL": "",
@@ -466,6 +467,45 @@ def verify(cfg: dict, repo: Path):
 
 
 # --------------------------------------------------------------------------
+# landing the day on the base branch
+# --------------------------------------------------------------------------
+
+def try_git(repo: Path, *args):
+    """Run git without dying. Returns (ok, last line of output)."""
+    r = subprocess.run(["git", "-C", str(repo), *args],
+                       capture_output=True, text=True)
+    detail = (r.stderr or r.stdout or "").strip().splitlines()
+    return r.returncode == 0, (detail[-1] if detail else "")
+
+
+def merge_into_base(cfg: dict, repo: Path, step) -> tuple:
+    """Land a finished day on the base branch locally, so no PR is needed.
+
+    Fast-forward if the base has not moved, a merge commit if it has. On any
+    failure the base is left exactly as it was and the work stays on its own
+    branch - the same place a failed day leaves it - so nothing is ever lost.
+    Returns (merged, reason).
+    """
+    base = cfg["BASE_BRANCH"]
+
+    ok, err = try_git(repo, "checkout", base)
+    if not ok:
+        return False, f"could not check out {base}: {err}"
+
+    ok, err = try_git(repo, "merge", "--ff-only", step.branch)
+    if not ok:
+        # Base moved underneath us: record the join explicitly instead.
+        ok, err = try_git(repo, "merge", "--no-ff", "--no-edit", step.branch)
+        if not ok:
+            try_git(repo, "merge", "--abort")
+            try_git(repo, "checkout", step.branch)
+            return False, err
+
+    try_git(repo, "branch", "-d", step.branch)
+    return True, ""
+
+
+# --------------------------------------------------------------------------
 # tracker sync (best effort)
 # --------------------------------------------------------------------------
 
@@ -668,9 +708,17 @@ def cmd_run(cfg, args):
     sha = git(repo, "rev-parse", "--short", "HEAD")
     info(f"  committed {sha}: {subject}")
 
+    merged = False
+    if branch_mode == "branch" and flag(cfg, "AUTO_MERGE"):
+        merged, mreason = merge_into_base(cfg, repo, step)
+        if merged:
+            info(f"  merged into {cfg['BASE_BRANCH']}")
+        else:
+            warn(f"auto-merge failed, work stays on {step.branch}: {mreason}")
+
     pushed = False
     if flag(cfg, "PUSH"):
-        target = step.branch if branch_mode == "branch" else cfg["BASE_BRANCH"]
+        target = step.branch if branch_mode == "branch" and not merged else cfg["BASE_BRANCH"]
         r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", target],
                            capture_output=True, text=True)
         pushed = r.returncode == 0
@@ -681,7 +729,7 @@ def cmd_run(cfg, args):
             warn("push failed: " + (detail[-1] if detail else "unknown error"))
 
     pr_url = ""
-    if pushed and branch_mode == "branch" and flag(cfg, "OPEN_PR"):
+    if pushed and not merged and branch_mode == "branch" and flag(cfg, "OPEN_PR"):
         r = subprocess.run(
             ["gh", "pr", "create", "--fill", "--base", cfg["BASE_BRANCH"],
              "--head", step.branch, "--title", subject],
@@ -697,7 +745,9 @@ def cmd_run(cfg, args):
         "day": step.n, "status": "done",
         "at": datetime.now().isoformat(timespec="seconds"),
         "title": step.title, "summary": summary, "commit": sha,
-        "branch": step.branch if branch_mode == "branch" else cfg["BASE_BRANCH"],
+        "branch": step.branch if branch_mode == "branch" and not merged
+                  else cfg["BASE_BRANCH"],
+        "merged": merged,
         "pushed": pushed, "pr": pr_url, "log": log_path.name,
         "changed": len(changed),
     })
