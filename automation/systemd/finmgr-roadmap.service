@@ -1,10 +1,10 @@
 [Unit]
 Description=Sixty Sessions - implement one roadmap step
 Documentation=file:%h/Documentos/Personal/Financial_manager/automation/README.md
-# Don't bother starting if the machine has no network; the timer's
-# Persistent=true will catch up on the next boot instead.
-Wants=network-online.target
-After=network-online.target
+# No network ordering here on purpose. network-online.target is a SYSTEM
+# target and is invisible to the user manager - `systemctl --user list-units
+# network-online.target` reports it not-found - so Wants=/After= on it were
+# silently doing nothing. The wait lives in ExecStartPre below instead.
 
 # Rate limiting belongs in [Unit], and BOTH halves must be set here: left to
 # its 10-second default, StartLimitIntervalSec means a retry 30 minutes later
@@ -16,6 +16,14 @@ StartLimitBurst=2
 [Service]
 Type=oneshot
 WorkingDirectory=__REPO_DIR__
+
+# Wait up to five minutes for name resolution to come back after a boot or a
+# resume, then start regardless. Deliberately always exits 0: if the network
+# really is down, the runner is the thing that should notice, because it is
+# the thing that records the failed day and tells your desktop about it. An
+# ExecStartPre that failed here would abort the run silently instead.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do getent hosts github.com >/dev/null 2>&1 && break; sleep 10; done; exit 0'
+
 ExecStart=/usr/bin/python3 __REPO_DIR__/automation/roadmap_runner.py run
 
 # `claude` and user-level tools live in ~/.local/bin, which a systemd
