@@ -23,6 +23,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,11 @@ DEFAULTS = {
     "MODEL": "opus",
     "STEP_TIMEOUT": "3600",
     "ALLOWED_TOOLS": "Read,Write,Edit,Glob,Grep,TodoWrite,Bash",
+    "DENIED_TOOLS": ("Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),"
+                     "Bash(git reset:*),Bash(git rebase:*)"),
+    "AGENT_CMD": ("claude -p {prompt} --output-format json --model {model} "
+                  "--permission-mode acceptEdits --permission-prompts none "
+                  "--allowedTools {tools} --disallowedTools {denied}"),
     "BASE_BRANCH": "main",
     "BRANCH_MODE": "branch",
     "PUSH": "1",
@@ -252,8 +258,13 @@ def preflight(cfg: dict, strict: bool) -> list:
         problems.append(f"{repo} is not a git repository")
         return problems
 
-    if not shutil.which("claude"):
-        problems.append("`claude` is not on PATH")
+    try:
+        agent_argv, _ = build_agent_cmd(cfg, "preflight probe")
+        exe = agent_argv[0]
+        if not shutil.which(exe) and not Path(exe).is_file():
+            problems.append(f"AGENT_CMD runs `{exe}`, which is not on PATH")
+    except ValueError as exc:
+        problems.append(str(exc))
 
     roadmap = repo / cfg["ROADMAP_FILE"]
     if not roadmap.exists():
@@ -379,43 +390,84 @@ def build_prompt(step, cfg: dict, steps: list, state: dict) -> str:
 # running the agent
 # --------------------------------------------------------------------------
 
+def build_agent_cmd(cfg: dict, prompt: str):
+    """Turn AGENT_CMD into an argv list. Returns (argv, stdin_text).
+
+    The template is split into words *before* the placeholders are filled in,
+    so a prompt full of quotes, newlines and backslashes always arrives as
+    exactly one argument and never has to survive a shell. Placeholders:
+    {prompt} {model} {tools} {denied} {repo}. An agent that wants its prompt
+    on stdin instead just leaves {prompt} out of the template.
+
+    Raises ValueError if the template is unusable, so preflight can report it
+    as a problem rather than dying mid-run.
+    """
+    template = str(cfg.get("AGENT_CMD", "")).strip()
+    if not template:
+        raise ValueError("AGENT_CMD is empty - there is no agent to run")
+    try:
+        words = shlex.split(template)
+    except ValueError as exc:
+        raise ValueError(f"AGENT_CMD does not parse as a command: {exc}") from exc
+    if not words:
+        raise ValueError("AGENT_CMD is empty - there is no agent to run")
+
+    values = {
+        "{prompt}": prompt,
+        "{model}": cfg.get("MODEL", ""),
+        "{tools}": cfg.get("ALLOWED_TOOLS", ""),
+        "{denied}": cfg.get("DENIED_TOOLS", ""),
+        "{repo}": cfg.get("REPO_DIR", ""),
+    }
+    argv = []
+    for word in words:
+        for key, val in values.items():
+            word = word.replace(key, val)
+        argv.append(word)
+
+    return argv, (None if "{prompt}" in template else prompt)
+
+
 def run_agent(cfg: dict, prompt: str, log_path: Path):
     """Return (ok, result_text, failure_reason)."""
-    cmd = [
-        "claude", "-p", prompt,
-        "--output-format", "json",
-        "--model", cfg["MODEL"],
-        "--permission-mode", "acceptEdits",
-        "--permission-prompts", "none",
-        "--allowedTools", cfg["ALLOWED_TOOLS"],
-        "--disallowedTools",
-        "Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),"
-        "Bash(git reset:*),Bash(git rebase:*)",
-    ]
+    try:
+        cmd, stdin_text = build_agent_cmd(cfg, prompt)
+    except ValueError as exc:
+        return False, "", str(exc)
+
+    agent = Path(cmd[0]).name
+    # The prompt is thousands of words; keep the log readable.
+    shown = " ".join("<prompt>" if w == prompt else shlex.quote(w) for w in cmd)
+
     timeout = int(cfg["STEP_TIMEOUT"])
     started = time.time()
     try:
         r = subprocess.run(cmd, cwd=cfg["REPO_DIR"], capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, timeout=timeout, input=stdin_text)
     except subprocess.TimeoutExpired:
-        log_path.write_text(f"TIMED OUT after {timeout}s\n", encoding="utf-8")
+        log_path.write_text(f"# agent: {shown}\nTIMED OUT after {timeout}s\n",
+                            encoding="utf-8")
         return False, "", f"agent exceeded STEP_TIMEOUT ({timeout}s)"
+    except (FileNotFoundError, PermissionError) as exc:
+        return False, "", f"could not run agent `{cmd[0]}`: {exc}"
 
     elapsed = int(time.time() - started)
     log_path.write_text(
-        f"# exit={r.returncode} elapsed={elapsed}s\n\n"
+        f"# agent: {shown}\n# exit={r.returncode} elapsed={elapsed}s\n\n"
         f"## stdout\n{r.stdout}\n\n## stderr\n{r.stderr}\n", encoding="utf-8")
 
     if r.returncode != 0:
         tail = (r.stderr or r.stdout or "").strip().splitlines()
-        return False, "", f"claude exited {r.returncode}: {tail[-1] if tail else 'no output'}"
+        return False, "", f"{agent} exited {r.returncode}: {tail[-1] if tail else 'no output'}"
 
+    # Agents that print plain text fall through the JSONDecodeError below, so
+    # a non-JSON CLI needs no code change here - only a different AGENT_CMD.
     text = r.stdout
     try:
         payload = json.loads(r.stdout)
         text = payload.get("result") or payload.get("text") or r.stdout
         if payload.get("is_error"):
-            return False, text, "claude reported an error result"
+            return False, text, f"{agent} reported an error result"
     except json.JSONDecodeError:
         pass  # fall back to the raw text
 
@@ -512,6 +564,10 @@ def merge_into_base(cfg: dict, repo: Path, step) -> tuple:
 def tick_artifact(cfg: dict, step, note: str):
     url = str(cfg.get("ARTIFACT_URL", "")).strip()
     if not url:
+        return
+    # This one is genuinely Claude-specific - it drives the Artifact tool - and
+    # is unrelated to AGENT_CMD. If you swap the agent out, drop ARTIFACT_URL.
+    if not shutil.which("claude"):
         return
     payload = json.dumps({"done": {str(step.n): date.today().isoformat()},
                           "notes": {str(step.n): note[:200]}})

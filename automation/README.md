@@ -88,13 +88,44 @@ All in `config.env`:
 | Key | Default | Notes |
 |---|---|---|
 | `RUN_TIME` | `19:30` | Local time. Re-run `install.sh` after changing. |
-| `MODEL` | `opus` | Any Claude Code model alias. |
+| `AGENT_CMD` | Claude Code | The whole agent, as one command line. See below. |
+| `MODEL` | `opus` | Substituted into `AGENT_CMD` as `{model}`. |
 | `STEP_TIMEOUT` | `3600` | Seconds for one step. |
 | `BRANCH_MODE` | `branch` | `branch` = one branch per day (reviewable). `main` = commit straight to main. |
 | `PUSH` | `1` | Push after committing. |
 | `OPEN_PR` | `0` | Needs a working `gh auth status`. |
-| `ALLOWED_TOOLS` | see file | Everything else is denied automatically. |
-| `ARTIFACT_URL` | set | Tracker to tick off. Blank to skip. |
+| `ALLOWED_TOOLS` | see file | Everything else is denied automatically. `{tools}`. |
+| `DENIED_TOOLS` | git commands | Keeps the agent off version control. `{denied}`. |
+| `ARTIFACT_URL` | set | Tracker to tick off. Blank to skip. Claude-only. |
+
+## Using a different agent
+
+Nothing outside `AGENT_CMD` knows which agent runs. The roadmap parsing,
+`verify()`, the git and merge logic, the state file and the timer are all
+agent-agnostic, and the contract with the agent is plain text in, plain text
+out — a prompt on one side, a `SUMMARY:` / `STATUS:` / `VERIFIED:` / `NOTES:`
+report on the other.
+
+So switching is a one-line edit to `config.env`:
+
+```bash
+AGENT_CMD=gemini --yolo -p {prompt}
+```
+
+Placeholders (`{prompt} {model} {tools} {denied} {repo}`) are filled in
+*after* the line is split into words, so the prompt is always exactly one
+argument however many quotes and newlines it contains. Omit `{prompt}` and
+it goes to the agent's stdin instead. Output is parsed as JSON if it is
+JSON, otherwise taken as plain text.
+
+Two things to know before you rely on it:
+
+- It must be an **agentic** CLI — one that edits files and runs commands by
+  itself, unattended. A chat model cannot do this job.
+- `DENIED_TOOLS` is Claude Code syntax. Another agent will want its own, or
+  have no equivalent. What still holds without it: the prompt's "Hard rules",
+  and `verify()`, which refuses any day that touched `automation/` or `data/`
+  or left `make test` red.
 
 ## State
 
