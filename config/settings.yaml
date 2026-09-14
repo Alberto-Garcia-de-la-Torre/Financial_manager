@@ -1,0 +1,25 @@
+# finmgr configuration.
+#
+# Every value here has a default in finmgr/config.py; this file is what the
+# project actually runs with. Relative paths are resolved against the
+# repository root, so the same file works from any working directory.
+#
+# Point FINMGR_SETTINGS at another file to override the whole thing
+# (useful for tests and for one-off experiments).
+
+# Where the market data panel lives. Never committed — see .gitignore.
+data_dir: data
+
+# The 100 companies, written on day 7.
+universe_path: config/universe.csv
+
+# Everything is compared in one currency. A US and a Spanish stock are not
+# comparable until both are in EUR (day 18).
+base_currency: EUR
+
+# Used for exchange calendars, timestamps and the daily schedule.
+timezone: Europe/Madrid
+
+# How far back the backfill reaches. Roughly fifteen years of daily bars;
+# tickers younger than this simply start later.
+history_start: 2010-01-01
