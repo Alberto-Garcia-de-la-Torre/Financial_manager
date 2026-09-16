@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.scripts]
-finmgr = "finmgr.cli:app"
+finmgr = "finmgr.cli:run"
 
 [project.urls]
 Repository = "https://github.com/Alberto-Garcia-de-la-Torre/Financial_manager"

@@ -13,6 +13,9 @@ data_dir: data
 # The 100 companies, written on day 7.
 universe_path: config/universe.csv
 
+# Rotating run log. Every invocation stamps its run_id on every line here.
+log_dir: logs
+
 # Everything is compared in one currency. A US and a Spanish stock are not
 # comparable until both are in EUR (day 18).
 base_currency: EUR

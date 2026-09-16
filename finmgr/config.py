@@ -50,6 +50,10 @@ class Settings(BaseModel):
         default=Path("config/universe.csv"),
         description="CSV listing the companies the project tracks.",
     )
+    log_dir: Path = Field(
+        default=Path("logs"),
+        description="Where the rotating run log is written. Never committed to git.",
+    )
     base_currency: str = Field(
         default="EUR",
         description="Currency every price and P&L figure is expressed in.",
@@ -63,7 +67,7 @@ class Settings(BaseModel):
         description="Earliest date the backfill asks for.",
     )
 
-    @field_validator("data_dir", "universe_path")
+    @field_validator("data_dir", "universe_path", "log_dir")
     @classmethod
     def _absolute(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()
@@ -96,6 +100,11 @@ class Settings(BaseModel):
         """Create the data directory if it isn't there yet and return it."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return self.data_dir
+
+    def ensure_log_dir(self) -> Path:
+        """Create the log directory if it isn't there yet and return it."""
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        return self.log_dir
 
 
 def settings_path(path: Path | str | None = None) -> Path:

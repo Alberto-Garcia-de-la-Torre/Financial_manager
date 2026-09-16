@@ -13,3 +13,6 @@ dist/
 
 # Market data never belongs in git (anchored: finmgr/data/ is source code)
 /data/
+
+# Run logs: machine-local history, not source
+/logs/
