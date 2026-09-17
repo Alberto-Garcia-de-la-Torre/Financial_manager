@@ -3,16 +3,41 @@ This is a personal financial manager to make quick research through the market.
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11+ and `make`.
+
+```bash
+make install
+```
+
+That creates `.venv` and installs the package editable with its dev extras.
+The equivalent by hand:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 With the environment active, `python -c "import finmgr"` works from any
 directory. Dependency versions are pinned in `pyproject.toml`.
+
+## Tests and lint
+
+Every target bootstraps `.venv` first, so a fresh clone needs nothing but
+`make test`:
+
+```bash
+make test    # pytest
+make lint    # ruff check + ruff format --check, changes nothing
+make fmt     # ruff format + ruff check --fix
+make check   # lint, then test
+```
+
+Both tools are configured in `pyproject.toml`. Tests live in `tests/` and
+never touch the network, `data/` or the real `config/settings.yaml` — the
+autouse fixture in `tests/conftest.py` clears `FINMGR_SETTINGS` and everything
+writes under pytest's `tmp_path`. `automation/`, `scratch/` and Markdown files
+are outside ruff's scope.
 
 ## Configuration
 

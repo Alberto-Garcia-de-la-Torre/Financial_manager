@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -130,7 +130,7 @@ def mint_run_id(now: datetime | None = None, sha: str | None = None) -> str:
     unique on its own — two runs can start in the same second from the same
     commit — so four random hex characters make the id collision-proof.
     """
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S")
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%S")
     revision = sha if sha is not None else (git_sha() or "nogit")
     token = os.urandom(2).hex()
     return f"{stamp}-{revision}-{token}"
@@ -222,7 +222,7 @@ def start_run(
     log_file = setup_logging(settings, level=level, console=console)
     run = RunContext(
         run_id=mint_run_id(sha=sha),
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         started_monotonic=time.monotonic(),
         git_sha=sha or "nogit",
         git_dirty=git_is_dirty(),

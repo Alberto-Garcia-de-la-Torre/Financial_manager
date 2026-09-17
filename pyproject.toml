@@ -32,6 +32,14 @@ dependencies = [
     "pytest==9.1.1",
 ]
 
+[project.optional-dependencies]
+# Pinned for the same reason as the runtime deps: a ruff release can add or
+# change lints, and `make lint` going red on code nobody touched is a waste of
+# a session. `make install` puts this extra in .venv.
+dev = [
+    "ruff==0.16.8",
+]
+
 [project.scripts]
 finmgr = "finmgr.cli:run"
 
@@ -40,3 +48,43 @@ Repository = "https://github.com/Alberto-Garcia-de-la-Torre/Financial_manager"
 
 [tool.setuptools.packages.find]
 include = ["finmgr*"]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+# -ra summarises everything that wasn't a plain pass; the two --strict flags
+# turn a typo in a marker or in this config into an error instead of silence.
+addopts = "-ra --strict-markers --strict-config --showlocals"
+# A warning from our own code is a defect report that arrives early. Anything
+# genuinely out of our hands gets an explicit ignore line here, with a reason.
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# automation/ is the unattended roadmap runner and is off limits to the daily
+# sessions, so it is not ours to reformat. scratch/ is the pre-project yfinance
+# code kept as reference on day 1 — deliberately frozen, deliberately unlinted.
+#
+# Markdown is excluded too: ruff formats Python fenced blocks inside .md, and
+# the prose here — README, ROADMAP — is written for people, not for the
+# formatter.
+extend-exclude = ["automation", "scratch", "*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade: this is a 3.11+ project, write it that way
+    "B",    # bugbear
+    "SIM",  # simplifications
+    "C4",   # comprehensions
+    "ARG",  # unused arguments
+    "PTH",  # pathlib over os.path — the data layer is all paths
+    "RUF",
+]
+
+[tool.ruff.format]
+docstring-code-format = true
