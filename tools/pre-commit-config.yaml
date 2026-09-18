@@ -1,0 +1,49 @@
+# Commit-time guardrails. Install them once with `make hooks`.
+#
+# Two jobs, in order of how much damage they prevent:
+#
+#   1. Keep market data out of git. A 15-year daily panel for 100 tickers is
+#      hundreds of megabytes of Parquet that git stores forever, in every clone,
+#      even after a later `git rm`. `.gitignore` already hides `data/`, but
+#      `git add -f` walks straight past it — this hook is the part that says no.
+#   2. Keep the tree lint-clean and formatted, so `make lint` on a fresh clone
+#      is green for the same reason it was green yesterday.
+#
+# Everything here is a local hook: no hook repository is cloned, nothing is
+# downloaded at commit time, and the ruff that runs here is byte-for-byte the
+# ruff that `make lint` runs, because both are the pinned one in `.venv`. One
+# version pin, in pyproject.toml, instead of two that can drift apart.
+repos:
+  - repo: local
+    hooks:
+      # `language: fail` needs no interpreter and no environment: pre-commit
+      # selects the staged files with `files` below and, if any matched, prints
+      # `entry` followed by the offending paths and fails the commit.
+      - id: no-data-in-git
+        name: refuse market data (data/, Parquet and friends)
+        language: fail
+        # Anchored at the repository root on purpose: `finmgr/data/` is the
+        # source code of the storage layer and must stay committable. The
+        # extension list catches a data file staged from anywhere else — a
+        # Parquet in the repo root is just as unwelcome as one under data/.
+        # `.csv` is deliberately absent: config/universe.csv is source.
+        files: '^data/|\.(parquet|pq|feather|arrow|orc|avro|h5|hdf5|npy|npz|pkl|pickle|duckdb|db|sqlite|sqlite3)$'
+        entry: "Market data does not belong in git. These staged paths are refused:"
+
+      # --force-exclude makes ruff honour the `extend-exclude` in pyproject.toml
+      # even for files named explicitly on the command line, which is exactly
+      # how pre-commit invokes it. Without it, a commit touching automation/ or
+      # scratch/ would be linted against rules those directories are exempt from.
+      - id: ruff-check
+        name: ruff (lint, with safe fixes applied)
+        language: system
+        entry: .venv/bin/ruff check --force-exclude --fix
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff-format
+        language: system
+        entry: .venv/bin/ruff format --force-exclude
+        types_or: [python, pyi]
+        require_serial: true

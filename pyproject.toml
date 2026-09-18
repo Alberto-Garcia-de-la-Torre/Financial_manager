@@ -38,6 +38,7 @@ dependencies = [
 # a session. `make install` puts this extra in .venv.
 dev = [
     "ruff==0.16.8",
+    "pre-commit==4.6.2",
 ]
 
 [project.scripts]

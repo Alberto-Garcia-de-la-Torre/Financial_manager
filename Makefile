@@ -10,10 +10,13 @@ BIN := $(VENV)/bin
 # Touched after a successful install; its timestamp against pyproject.toml is
 # what decides whether the dependencies need reinstalling.
 STAMP := $(VENV)/.install-stamp
+# Not at the conventional .pre-commit-config.yaml, so every entry point that
+# touches the hooks has to name it explicitly.
+HOOKS := tools/pre-commit-config.yaml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install test lint fmt check clean
+.PHONY: help install hooks hooks-all test lint fmt check clean
 
 help: ## List the available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -28,6 +31,12 @@ $(STAMP): pyproject.toml | $(BIN)/python
 	@touch $(STAMP)
 
 install: $(STAMP) ## Create .venv and install the package with its dev extras
+
+hooks: $(STAMP) ## Install the git pre-commit hooks (run once per clone)
+	$(BIN)/pre-commit install --config $(HOOKS)
+
+hooks-all: $(STAMP) ## Run every hook over the whole tree, not just staged files
+	$(BIN)/pre-commit run --config $(HOOKS) --all-files
 
 test: $(STAMP) ## Run the test suite
 	$(BIN)/pytest
