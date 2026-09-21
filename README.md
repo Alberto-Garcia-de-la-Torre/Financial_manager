@@ -168,6 +168,44 @@ Relative paths in the YAML are resolved against the repository root, so a run
 started from any working directory reads and writes the same files. Set
 `FINMGR_SETTINGS` to point at a different file.
 
+## The universe
+
+`config/universe.csv` is the fixed list of 100 companies everything else turns
+around — one row per company, six columns:
+
+```
+ticker,name,exchange,currency,sector,country
+AAPL,Apple Inc.,XNAS,USD,Information Technology,United States
+SAN.MC,Banco Santander SA,XMAD,EUR,Financials,Spain
+```
+
+`ticker` is Yahoo's own spelling, suffix included (`SAN.MC`, `AIR.PA`,
+`SAP.DE`, `ASML.AS`, `NOVO-B.CO`, `7203.T`) — day 8 checks every one of them
+returns bars. `exchange` is the venue's MIC, which is what day 17 hands to
+`exchange_calendars` to tell a missing session apart from a Madrid holiday.
+`currency` is the ISO code the venue quotes in; note that Yahoo reports London
+prices in pence rather than pounds, so the EUR conversion on day 18 has that
+one special case to handle. `sector` is a GICS sector, spelled exactly as GICS
+spells it, and is what day 30 demeans features against.
+
+The mix is 40 US large caps, 40 European from the IBEX 35, CAC 40, DAX and AEX,
+and 20 from the UK, Switzerland, the Nordics, Italy, Japan, Taiwan, Hong Kong,
+Canada and Australia. All eleven GICS sectors appear, the smallest — Real
+Estate — three times; Financials is the largest at 17. Sector counts are
+deliberately uneven because the listed universes are, and a ranking that
+pretends otherwise is not ranking the market it claims to.
+
+The list is chosen today and backtested backwards, which is the
+**survivorship bias** named at the top of this README: companies that failed or
+were acquired over the last fifteen years are missing, so historical returns
+here are flattering by an amount this project does not attempt to estimate.
+
+`tests/test_universe.py` asserts the invariants downstream code assumes —
+exactly 100 rows, no duplicate ticker, no sector appearing only once, GICS
+sector names, ISO currency codes, MIC exchange codes — so a hand edit that
+breaks one of them fails `make test` rather than surfacing as a strange
+ranking six weeks later.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six

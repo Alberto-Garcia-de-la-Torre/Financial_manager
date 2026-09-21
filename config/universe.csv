@@ -1,0 +1,101 @@
+ticker,name,exchange,currency,sector,country
+AAPL,Apple Inc.,XNAS,USD,Information Technology,United States
+ABBV,AbbVie Inc.,XNYS,USD,Health Care,United States
+AMZN,Amazon.com Inc.,XNAS,USD,Consumer Discretionary,United States
+AVGO,Broadcom Inc.,XNAS,USD,Information Technology,United States
+BA,The Boeing Company,XNYS,USD,Industrials,United States
+BAC,Bank of America Corporation,XNYS,USD,Financials,United States
+BRK-B,Berkshire Hathaway Inc. Class B,XNYS,USD,Financials,United States
+CAT,Caterpillar Inc.,XNYS,USD,Industrials,United States
+COST,Costco Wholesale Corporation,XNAS,USD,Consumer Staples,United States
+CRM,Salesforce Inc.,XNYS,USD,Information Technology,United States
+CVX,Chevron Corporation,XNYS,USD,Energy,United States
+DIS,The Walt Disney Company,XNYS,USD,Communication Services,United States
+DUK,Duke Energy Corporation,XNYS,USD,Utilities,United States
+GOOGL,Alphabet Inc. Class A,XNAS,USD,Communication Services,United States
+GS,The Goldman Sachs Group Inc.,XNYS,USD,Financials,United States
+HD,The Home Depot Inc.,XNYS,USD,Consumer Discretionary,United States
+HON,Honeywell International Inc.,XNAS,USD,Industrials,United States
+JNJ,Johnson & Johnson,XNYS,USD,Health Care,United States
+JPM,JPMorgan Chase & Co.,XNYS,USD,Financials,United States
+KO,The Coca-Cola Company,XNYS,USD,Consumer Staples,United States
+LLY,Eli Lilly and Company,XNYS,USD,Health Care,United States
+MCD,McDonald's Corporation,XNYS,USD,Consumer Discretionary,United States
+META,Meta Platforms Inc.,XNAS,USD,Communication Services,United States
+MSFT,Microsoft Corporation,XNAS,USD,Information Technology,United States
+NEE,NextEra Energy Inc.,XNYS,USD,Utilities,United States
+NFLX,Netflix Inc.,XNAS,USD,Communication Services,United States
+NKE,NIKE Inc. Class B,XNYS,USD,Consumer Discretionary,United States
+NVDA,NVIDIA Corporation,XNAS,USD,Information Technology,United States
+ORCL,Oracle Corporation,XNYS,USD,Information Technology,United States
+PEP,PepsiCo Inc.,XNAS,USD,Consumer Staples,United States
+PFE,Pfizer Inc.,XNYS,USD,Health Care,United States
+PG,The Procter & Gamble Company,XNYS,USD,Consumer Staples,United States
+PLD,Prologis Inc.,XNYS,USD,Real Estate,United States
+SHW,The Sherwin-Williams Company,XNYS,USD,Materials,United States
+TSLA,Tesla Inc.,XNAS,USD,Consumer Discretionary,United States
+TXN,Texas Instruments Incorporated,XNAS,USD,Information Technology,United States
+UNH,UnitedHealth Group Incorporated,XNYS,USD,Health Care,United States
+UNP,Union Pacific Corporation,XNYS,USD,Industrials,United States
+V,Visa Inc. Class A,XNYS,USD,Financials,United States
+XOM,Exxon Mobil Corporation,XNYS,USD,Energy,United States
+ACS.MC,ACS Actividades de Construcción y Servicios SA,XMAD,EUR,Industrials,Spain
+AENA.MC,Aena SME SA,XMAD,EUR,Industrials,Spain
+AMS.MC,Amadeus IT Group SA,XMAD,EUR,Information Technology,Spain
+BBVA.MC,Banco Bilbao Vizcaya Argentaria SA,XMAD,EUR,Financials,Spain
+GRF.MC,Grifols SA,XMAD,EUR,Health Care,Spain
+IBE.MC,Iberdrola SA,XMAD,EUR,Utilities,Spain
+ITX.MC,Industria de Diseño Textil SA,XMAD,EUR,Consumer Discretionary,Spain
+REP.MC,Repsol SA,XMAD,EUR,Energy,Spain
+SAN.MC,Banco Santander SA,XMAD,EUR,Financials,Spain
+TEF.MC,Telefónica SA,XMAD,EUR,Communication Services,Spain
+AI.PA,Air Liquide SA,XPAR,EUR,Materials,France
+AIR.PA,Airbus SE,XPAR,EUR,Industrials,France
+BNP.PA,BNP Paribas SA,XPAR,EUR,Financials,France
+CAP.PA,Capgemini SE,XPAR,EUR,Information Technology,France
+CS.PA,AXA SA,XPAR,EUR,Financials,France
+MC.PA,LVMH Moët Hennessy Louis Vuitton SE,XPAR,EUR,Consumer Discretionary,France
+OR.PA,L'Oréal SA,XPAR,EUR,Consumer Staples,France
+RMS.PA,Hermès International SCA,XPAR,EUR,Consumer Discretionary,France
+SAN.PA,Sanofi SA,XPAR,EUR,Health Care,France
+SU.PA,Schneider Electric SE,XPAR,EUR,Industrials,France
+TTE.PA,TotalEnergies SE,XPAR,EUR,Energy,France
+ALV.DE,Allianz SE,XETR,EUR,Financials,Germany
+BAS.DE,BASF SE,XETR,EUR,Materials,Germany
+BAYN.DE,Bayer AG,XETR,EUR,Health Care,Germany
+DTE.DE,Deutsche Telekom AG,XETR,EUR,Communication Services,Germany
+IFX.DE,Infineon Technologies AG,XETR,EUR,Information Technology,Germany
+MBG.DE,Mercedes-Benz Group AG,XETR,EUR,Consumer Discretionary,Germany
+MUV2.DE,Münchener Rückversicherungs-Gesellschaft AG,XETR,EUR,Financials,Germany
+RWE.DE,RWE AG,XETR,EUR,Utilities,Germany
+SAP.DE,SAP SE,XETR,EUR,Information Technology,Germany
+SIE.DE,Siemens AG,XETR,EUR,Industrials,Germany
+VNA.DE,Vonovia SE,XETR,EUR,Real Estate,Germany
+AD.AS,Koninklijke Ahold Delhaize NV,XAMS,EUR,Consumer Staples,Netherlands
+ASML.AS,ASML Holding NV,XAMS,EUR,Information Technology,Netherlands
+DSFIR.AS,DSM-Firmenich AG,XAMS,EUR,Materials,Netherlands
+HEIA.AS,Heineken NV,XAMS,EUR,Consumer Staples,Netherlands
+INGA.AS,ING Groep NV,XAMS,EUR,Financials,Netherlands
+KPN.AS,Koninklijke KPN NV,XAMS,EUR,Communication Services,Netherlands
+PHIA.AS,Koninklijke Philips NV,XAMS,EUR,Health Care,Netherlands
+WKL.AS,Wolters Kluwer NV,XAMS,EUR,Industrials,Netherlands
+AZN.L,AstraZeneca PLC,XLON,GBP,Health Care,United Kingdom
+HSBA.L,HSBC Holdings plc,XLON,GBP,Financials,United Kingdom
+SHEL.L,Shell plc,XLON,GBP,Energy,United Kingdom
+ULVR.L,Unilever PLC,XLON,GBP,Consumer Staples,United Kingdom
+NESN.SW,Nestlé SA,XSWX,CHF,Consumer Staples,Switzerland
+ROG.SW,Roche Holding AG,XSWX,CHF,Health Care,Switzerland
+UBSG.SW,UBS Group AG,XSWX,CHF,Financials,Switzerland
+NOVO-B.CO,Novo Nordisk A/S Class B,XCSE,DKK,Health Care,Denmark
+ERIC-B.ST,Telefonaktiebolaget LM Ericsson Class B,XSTO,SEK,Information Technology,Sweden
+EQNR.OL,Equinor ASA,XOSL,NOK,Energy,Norway
+ENEL.MI,Enel SpA,XMIL,EUR,Utilities,Italy
+ISP.MI,Intesa Sanpaolo SpA,XMIL,EUR,Financials,Italy
+6758.T,Sony Group Corporation,XTKS,JPY,Consumer Discretionary,Japan
+7203.T,Toyota Motor Corporation,XTKS,JPY,Consumer Discretionary,Japan
+8306.T,Mitsubishi UFJ Financial Group Inc.,XTKS,JPY,Financials,Japan
+2330.TW,Taiwan Semiconductor Manufacturing Company Limited,XTAI,TWD,Information Technology,Taiwan
+0700.HK,Tencent Holdings Limited,XHKG,HKD,Communication Services,China
+0823.HK,Link Real Estate Investment Trust,XHKG,HKD,Real Estate,Hong Kong
+RY.TO,Royal Bank of Canada,XTSE,CAD,Financials,Canada
+BHP.AX,BHP Group Limited,XASX,AUD,Materials,Australia
