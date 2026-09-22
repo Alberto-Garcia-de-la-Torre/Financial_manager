@@ -206,6 +206,48 @@ sector names, ISO currency codes, MIC exchange codes — so a hand edit that
 breaks one of them fails `make test` rather than surfacing as a strange
 ranking six weeks later.
 
+Code reads the file through `finmgr.data.universe`, never by opening the CSV
+itself:
+
+```python
+from finmgr.data.universe import load_universe
+
+for company in load_universe():
+    print(company.ticker, company.exchange, company.sector)
+```
+
+### Checking the tickers are alive
+
+A ticker that is real but misspelled does not raise: yfinance answers an
+unknown or delisted symbol with an *empty* DataFrame, so the company simply
+never appears in any ranking. `AIR.PA` is Airbus in Paris; `AIR` on its own is
+AAR Corp in New York, and both "work".
+
+```bash
+python -m finmgr.data.validate                                    # all 100
+python -m finmgr.data.validate --ticker ROG.SW --ticker RO.SW     # just these
+python -m finmgr.data.validate --report docs/universe_validation.md
+```
+
+Each ticker gets `yf.Ticker(t).history(period="5d")` and one of four verdicts —
+`ok`, `stale` (bars, but the newest is over `--max-age-days` old), `empty` or
+`error`. An empty or failed answer is retried up to `--attempts` times, because
+Yahoo answers a throttled request exactly the way it answers a dead symbol and
+one empty frame is not grounds for editing the universe file. The command
+prints the failure list and exits non-zero if it is not empty. It fetches five
+days, keeps nothing and writes nothing under `data/` — day 11 is where
+downloading becomes a real pipeline.
+
+The last run is recorded in [`docs/universe_validation.md`](docs/universe_validation.md):
+**100 of 100 returned recent bars on 22 Sep 2026.** Getting there took one
+replacement. Yahoo no longer has `ROG.SW`, the Roche participation certificate
+that carries almost all of Roche's volume — it 404s with "Quote not found".
+The bearer share `RO.SW` does return bars, but at roughly CHF 9M of daily
+turnover against Novartis's CHF 356M it would be excluded by day 28's
+liquidity filter anyway, leaving a dead slot in the universe. So the row is now
+`NOVN.SW`, Novartis AG: same country, same GICS sector, same venue and
+currency, full history back to 2010.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
