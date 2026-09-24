@@ -248,6 +248,69 @@ liquidity filter anyway, leaving a dead slot in the universe. So the row is now
 `NOVN.SW`, Novartis AG: same country, same GICS sector, same venue and
 currency, full history back to 2010.
 
+## The bar store
+
+Every daily bar the project uses lives in one place, `finmgr/data/store.py`,
+in one schema fixed before anything was downloaded:
+
+| column | dtype | |
+| --- | --- | --- |
+| `ticker` | `str` | Yahoo's spelling, suffix included |
+| `date` | `date32[day][pyarrow]` | the session's calendar date, exchange-local |
+| `open`, `high`, `low`, `close` | `float64` | raw prices, unadjusted |
+| `volume` | `float64` | |
+
+On disk it is one Parquet file per ticker, in a Hive-style partition:
+
+```
+data/bars/daily/ticker=AAPL/part.parquet
+data/bars/daily/ticker=SAN.MC/part.parquet
+```
+
+A single ticker's fifteen years is one small file, so re-ingesting it rewrites
+nothing else; DuckDB reads the whole set as one table and skips the partitions
+a ticker filter cannot match; and when something looks wrong in eight weeks,
+the file to open follows from the ticker alone. The `ticker` column is stored
+*inside* each file as well as in its directory name, so a partition is
+readable on its own.
+
+```python
+from finmgr.data.store import read_bars, write_bars
+
+write_bars(frame)                                    # frame in the schema above
+read_bars()                                          # everything stored
+read_bars("AAPL")                                    # one ticker
+read_bars(["AAPL", "SAN.MC"], start="2024-01-01")    # bounds are inclusive
+```
+
+`write_bars` replaces each ticker's partition whole — the file is always
+exactly what was last handed over for that symbol — writing to a temporary
+name and renaming over the target, so an interrupted run leaves the previous
+partition intact rather than a truncated file. Merging new bars into stored
+history is day 12's job and builds on this. Reads go through DuckDB rather
+than `pd.read_parquet` because the filtering belongs next to the data: the
+date bound is pushed into the Parquet row groups and the rows the call did not
+ask for are never materialised.
+
+`conform_bars()` is the single place the schema is enforced, and it runs on
+both the write and the read path — so what comes out is dtype-identical to
+what went in, whatever the caller arrived with. It refuses a missing or
+unexpected column, an empty ticker, a missing date, a repeated
+`(ticker, date)`, and a ticker that would not work as a directory name. It
+also refuses a **timezone-aware** `date` column, which is the trap worth
+naming: casting one to a date converts through UTC first, so a Tokyo close at
+15:00 JST silently lands on the previous calendar day — every session,
+forever. Day 10 hands over exchange-local dates deliberately.
+
+What it does *not* do is judge the prices. A negative close, a high below its
+low or a NaN goes into the store unchanged: day 19 flags those and day 20
+quarantines them, and dropping them here would lose the evidence. An empty
+store, or a filter matching nothing, returns an empty frame with the full
+schema rather than something every caller has to test for.
+
+`tests/test_store.py` covers it, including day 9's acceptance criterion — a
+synthetic frame survives a write/read round trip with dtypes identical.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
