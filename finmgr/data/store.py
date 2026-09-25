@@ -310,8 +310,13 @@ def write_bars(
 # ---------------------------------------------------------------------------
 
 
-def _as_date(value: date | datetime | str | None, label: str) -> date | None:
-    """Accept a date, a datetime, an ISO string or None."""
+def as_date(value: date | datetime | str | None, label: str) -> date | None:
+    """Accept a date, a datetime, an ISO string or None.
+
+    Public because every caller that bounds a window — `read_bars` here,
+    `fetch_daily` on day 10 — has to read the same four spellings of a date
+    the same way.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -358,8 +363,8 @@ def read_bars(
     if not files:
         return empty_bars()
 
-    first = _as_date(start, "start")
-    last = _as_date(end, "end")
+    first = as_date(start, "start")
+    last = as_date(end, "end")
     if first is not None and last is not None and first > last:
         raise ValueError(f"start {first} is after end {last}")
 

@@ -1,0 +1,23 @@
+{
+  "ticker": "SAN.MC",
+  "start": "2024-10-28",
+  "end": "2024-11-11",
+  "call": "yf.Ticker('SAN.MC').history(start='2024-10-28', end='2024-11-12', interval='1d', auto_adjust=False)",
+  "captured_at": "2026-09-25T13:16:54+02:00",
+  "yfinance": "1.7.0",
+  "pandas": "3.0.5",
+  "rows": 11,
+  "timezone": "Europe/Madrid",
+  "index_name": "Date",
+  "index_unit": "s",
+  "dtypes": {
+    "Open": "float64",
+    "High": "float64",
+    "Low": "float64",
+    "Close": "float64",
+    "Adj Close": "float64",
+    "Volume": "int64",
+    "Dividends": "float64",
+    "Stock Splits": "float64"
+  }
+}

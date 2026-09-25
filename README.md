@@ -311,6 +311,67 @@ schema rather than something every caller has to test for.
 `tests/test_store.py` covers it, including day 9's acceptance criterion — a
 synthetic frame survives a write/read round trip with dtypes identical.
 
+## Fetching one ticker
+
+`finmgr/data/fetch.py` is the only place a Yahoo response becomes bars. It
+hands back exactly the schema above, ready for `write_bars` with nothing in
+between:
+
+```python
+from finmgr.data.fetch import fetch_daily
+from finmgr.data.store import write_bars
+
+write_bars(fetch_daily("SAN.MC", "2024-10-28", "2024-11-11"))
+write_bars(fetch_daily("AAPL"))   # history_start .. today, from settings
+```
+
+`start` and `end` are **inclusive**, the same way `read_bars` means them —
+Yahoo's exclusive `end` is converted here, once, so the same two words cannot
+bound a window differently depending on which function was called. Bars
+outside the requested window are trimmed, so two calls with touching ranges
+cannot both claim the same session.
+
+Three decisions everything downstream inherits:
+
+- **`auto_adjust=False`.** Yahoo's dividend-adjusted close is a moving number:
+  the whole history shifts every time a dividend is paid, so a bar stored last
+  month no longer matches the same bar today and no backtest is reproducible.
+  The raw close is what gets stored; `Adj Close`, `Dividends` and
+  `Stock Splits` are dropped, day 15 ingests the actions as facts in their own
+  right, and day 16 builds the adjusted series from them. Note what the flag
+  does *not* buy: Yahoo applies **splits** upstream, so August 2020 AAPL comes
+  back in post-split money whatever is asked for — a property of the source,
+  which day 16's comparison has to account for.
+- **Exchange-local dates.** yfinance stamps a Madrid session `00:00:00+01:00`,
+  which is 23:00 UTC the day *before*. The calendar date is taken from the
+  timestamp as it arrives, and the store refuses a timezone-aware `date`
+  column to keep that mistake off disk.
+- **Errors raise, empties do not.** A failed request — timeout, 404,
+  rate-limit rejection — raises, so day 11's retry loop gets to see it. A
+  window with no bars in it is not a failure: it returns an empty frame
+  carrying the full schema. Yahoo does not draw that line itself, raising
+  `YFPricesMissingError` for a delisted symbol and for a live one asked about
+  a bank holiday in the same words, so `download_history` draws it — otherwise
+  day 12's "nothing new since Friday" would look like a broken ticker every
+  weekend.
+
+Prices pass through untouched — a NaN close or a high below its low is Yahoo's
+answer, and day 19 is where it gets flagged. Nothing here writes to disk and
+nothing here retries: one call, one ticker, one frame.
+
+`tests/test_fetch.py` is day 10's acceptance criterion — the conversion is
+pinned against **saved yfinance responses**, never the network. The fixtures
+live in `tests/fixtures/yahoo/` as the raw CSV plus a JSON sidecar recording
+the ticker, window, exchange timezone, dtypes and yfinance version; AAPL spans
+its 4:1 split of 2020-08-31 and SAN.MC spans a €0.10 dividend in Madrid. The
+test module replaces the one function that can reach Yahoo with a stub that
+fails the test, so the suite is offline by construction rather than by
+convention. To refresh or add a fixture — the only part that uses the network:
+
+```bash
+python tests/yahoo_fixtures.py AAPL 2020-08-24 2020-09-04
+```
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
