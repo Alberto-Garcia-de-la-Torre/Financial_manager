@@ -53,8 +53,8 @@ The hooks run again on commit, so a tree that passes `make check` commits
 without argument and a tree that does not is stopped before it lands.
 
 The pipeline the project runs for its own sake — ingest, check, features,
-train, rank, report — is described under "Command line" and is still stubbed
-out; `finmgr daily` chains it on a timer from day 55.
+train, rank, report — is described under "Command line". Only `ingest` is built
+so far; `finmgr daily` chains the lot on a timer from day 55.
 
 ## Setup
 
@@ -372,6 +372,76 @@ convention. To refresh or add a fixture — the only part that uses the network:
 python tests/yahoo_fixtures.py AAPL 2020-08-24 2020-09-04
 ```
 
+## Ingesting the universe
+
+`finmgr ingest` is the loop around `fetch_daily`, and its design assumption is
+that it will partly fail:
+
+```bash
+finmgr ingest                                  # every ticker in the universe
+finmgr ingest -t AAPL -t SAN.MC                # just these
+finmgr ingest --start 2024-01-01 --dry-run     # fetch and report, write nothing
+```
+
+- **A small delay between calls** — `--pause`, half a second by default.
+  yfinance scrapes a rate-limited endpoint, and a hundred requests as fast as
+  the socket allows is the quickest way to be throttled.
+- **Three attempts with exponential backoff** — `--attempts` and `--backoff`,
+  waiting 2s then 4s. A timeout, a 502 or a rate-limit rejection is a statement
+  about this second, not about the symbol. Every exception is retried rather
+  than a chosen few: the failure modes of a scraper are not enumerable, and
+  treating a retryable error as fatal loses a company's history for the day
+  while treating a fatal one as retryable costs four seconds.
+- **A try/except per ticker**, so one bad symbol cannot end the run. Whatever
+  goes wrong — the request, the conversion, the write — becomes that ticker's
+  status row and the loop moves on.
+
+Nothing raises for a ticker-level problem. What comes back is one status row
+per symbol — `ok`, `empty` (the request worked and the window holds no
+sessions, which is normal over a weekend), `failed` or `skipped` — carrying the
+rows, the window, the attempts spent and the error. Day 14 writes those rows to
+a manifest under `data/meta/`; today they are printed, and the command exits
+non-zero if anything failed or was skipped.
+
+Each ticker is written to the store as soon as it arrives, rather than
+collected and written at the end, so a run that dies halfway keeps everything
+it had already downloaded. And a run that is failing everywhere stops after
+`--abort-after` consecutive failures (ten by default, `0` disables it) and
+marks the rest `skipped`: 100 symbols at 3 attempts and 6 seconds of backoff
+each is half an hour of pointless waiting when the cause is that the cable is
+out. Ctrl-C does the same thing — stop, keep what arrived, print the report.
+
+### Pulling the cable
+
+Day 11's acceptance criterion is that pulling the network cable mid-run still
+exits cleanly with a report of what succeeded, and
+`tools/pull_the_cable.py` does exactly that, for real, against live Yahoo:
+
+```bash
+python tools/pull_the_cable.py --alive 2
+```
+
+It ingests into a throwaway directory under `/tmp` and, after the second
+ticker, moves itself into an empty network namespace and shuts every open
+socket down — no interface, no route, no resolver, and the pooled connection
+broken, which is what the kernel and the socket see when the cable comes out.
+Unprivileged, and confined to that one process. The run then ends like this:
+
+```
+>>> network severed after MSFT: empty netns, 3 open socket(s) cut <<<
+  AAPL     ok        6  2024-11-01  2024-11-08   1
+  MSFT     ok        6  2024-11-01  2024-11-08   1
+  SAN.MC   failed    3  ConnectionError: Failed to perform, curl: (7) Failed to
+                        connect to query2.finance.yahoo.com:443
+  AIR.PA   skipped   0  3 consecutive failures
+2 of 8 tickers ingested (failed=3, ok=2, skipped=3); 12 bars in 12.0s
+  — stopped early: 3 consecutive failures
+```
+
+Exit code 1, no traceback, and AAPL's and MSFT's bars are on disk. The same
+failure is pinned offline in `tests/test_ingest.py`, so it is checked by
+`make test` on a machine with no network at all.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -388,9 +458,10 @@ finmgr --help
   report     Render the daily HTML report.
 ```
 
-All six are stubs at this point. Each prints `not implemented yet` along with
-the roadmap day that fills it in, and exits non-zero so nothing mistakes an
-unwritten stage for a successful one.
+`ingest` is real from day 11 — see "Ingesting the universe" above, and
+`finmgr ingest --help` for its options. The other five are stubs: each prints
+`not implemented yet` along with the roadmap day that fills it in, and exits
+non-zero so nothing mistakes an unwritten stage for a successful one.
 
 `--log-level` is a global option, so it goes before the subcommand:
 

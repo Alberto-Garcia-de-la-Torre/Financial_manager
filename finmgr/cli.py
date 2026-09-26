@@ -4,8 +4,9 @@ Six subcommands make up the daily pipeline, in the order they run:
 
     ingest -> check -> features -> train -> rank -> report
 
-All six are stubs today. Each one prints what it will do and exits non-zero,
-so nothing downstream can mistake "not written yet" for "ran successfully".
+`ingest` is real from day 11; the other five are still stubs. Each stub prints
+what it will do and exits non-zero, so nothing downstream can mistake "not
+written yet" for "ran successfully".
 
 Every invocation is bracketed by a RUN START / RUN END pair in
 `logs/finmgr.log`, both carrying the run id minted in `finmgr.runlog`. The
@@ -16,12 +17,14 @@ itself, so the closing line gets written even when a command fails or raises.
 from __future__ import annotations
 
 import sys
+from typing import Annotated
 
 import typer
 from rich.console import Console
 
 from finmgr import runlog
 from finmgr.config import load_settings
+from finmgr.data import ingest as ingest_module
 
 app = typer.Typer(
     name="finmgr",
@@ -36,7 +39,6 @@ log = runlog.get_logger(__name__)
 # Which roadmap day turns each stub into a real command. Printed with the
 # stub message so it is obvious that nothing is missing by accident.
 _PLANNED = {
-    "ingest": "day 11",
     "check": "day 19",
     "features": "day 31",
     "train": "day 42",
@@ -88,9 +90,73 @@ def main(
 
 
 @app.command()
-def ingest() -> None:
-    """Download daily bars for the universe into the data store."""
-    _not_implemented("ingest")
+def ingest(
+    # Spelled with Annotated rather than as a default like the options below
+    # it: a repeatable option is a list, and a call in the default of a
+    # mutably-annotated argument is the thing bugbear's B008 exists to catch.
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Ingest only this symbol; repeatable. Skips the universe file.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    start: str = typer.Option(
+        None, "--start", help="First session date (default: history_start from settings)."
+    ),
+    end: str = typer.Option(None, "--end", help="Last session date, inclusive (default: today)."),
+    attempts: int = typer.Option(
+        ingest_module.DEFAULT_ATTEMPTS, "--attempts", help="Tries per ticker before giving up."
+    ),
+    pause: float = typer.Option(
+        ingest_module.DEFAULT_PAUSE, "--pause", help="Seconds between tickers."
+    ),
+    backoff: float = typer.Option(
+        ingest_module.DEFAULT_BACKOFF,
+        "--backoff",
+        help="Seconds before the first retry; doubles after each failed attempt.",
+    ),
+    abort_after: int = typer.Option(
+        ingest_module.DEFAULT_ABORT_AFTER,
+        "--abort-after",
+        help="Give up after this many consecutive failures (0 never gives up).",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Fetch and report, but write nothing to the store."
+    ),
+    show_all: bool = typer.Option(
+        False, "--all", "-a", help="List every ingested ticker, not just the first twenty."
+    ),
+) -> None:
+    """Download daily bars for the universe into the data store.
+
+    One bad symbol cannot stop the run: every ticker gets its own retries and
+    its own status row, and the report at the end says what made it onto disk.
+    Exits non-zero if anything failed or was skipped — with the report printed
+    either way.
+    """
+    settings = load_settings()
+    report = ingest_module.ingest_universe(
+        ticker or None,
+        start=start,
+        end=end,
+        attempts=attempts,
+        backoff=backoff,
+        pause=pause,
+        abort_after=abort_after,
+        write=not dry_run,
+        settings=settings,
+    )
+    ingest_module.render_console(report, console, show_all=show_all)
+    if not report.complete:
+        log.warning(
+            "finmgr ingest: %d failed, %d skipped",
+            len(report.failed),
+            len(report.skipped),
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command()
