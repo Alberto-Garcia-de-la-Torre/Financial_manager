@@ -268,7 +268,10 @@ def test_a_failing_write_is_the_tickers_failure_not_the_runs(
     def refuse(*_: object, **__: object) -> None:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(ingest, "write_bars", refuse)
+    # The store is reached through merge_bars from day 12 onwards; a full disk
+    # surfaces there, and has to stay this ticker's problem rather than the
+    # run's.
+    monkeypatch.setattr(ingest, "merge_bars", refuse)
 
     result = ingest_ticker("AAPL", *WINDOW, root=tmp_path, fetch=working())
 

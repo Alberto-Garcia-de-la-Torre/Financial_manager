@@ -22,9 +22,10 @@ and skips the partitions a `WHERE ticker IN (...)` cannot match. And when
 something looks wrong in eight weeks, the file to open is obvious from the
 ticker alone.
 
-    from finmgr.data.store import read_bars, write_bars
+    from finmgr.data.store import merge_bars, read_bars, write_bars
 
     write_bars(frame)                                   # frame in the schema above
+    merge_bars(frame)                                   # ... or fold it into what is stored
     read_bars(["AAPL", "SAN.MC"], start="2024-01-01")   # back out again
 
 The schema is fixed *now*, before day 10 downloads anything, because every
@@ -37,11 +38,19 @@ happened to hand over.
 `volume` is float64 rather than an integer on purpose: yfinance returns NaN
 volume for some sessions on some venues, and an integer column cannot hold
 that without inventing a zero that never traded.
+
+Two functions exist so a re-run costs nothing and changes nothing.
+:func:`max_stored_dates` says how far each ticker's history already reaches,
+which is what day 12's ingest asks Yahoo *from*; :func:`merge_bars` folds a new
+frame into a stored partition, keyed on `(ticker, date)`, so a session that is
+already on disk is overwritten rather than appended and an unchanged partition
+is not rewritten at all.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -56,6 +65,11 @@ from finmgr.config import Settings, load_settings
 
 #: The columns of a bar frame, in order.
 BAR_COLUMNS: tuple[str, ...] = ("ticker", "date", "open", "high", "low", "close", "volume")
+
+#: What `(ticker, date)` identifies — a session — and what is compared when
+#: deciding whether a bar already on disk has actually changed.
+KEY_COLUMNS: tuple[str, ...] = ("ticker", "date")
+VALUE_COLUMNS: tuple[str, ...] = tuple(c for c in BAR_COLUMNS if c not in KEY_COLUMNS)
 
 #: The pandas dtype of every column. This is the contract `read_bars()` and
 #: `write_bars()` both honour, and what "dtypes identical" means downstream.
@@ -394,3 +408,203 @@ def read_bars(
     # to_pandas() hands back dates as objects; conform_bars is what puts the
     # declared dtypes back, and is the same call the write path went through.
     return conform_bars(table.to_pandas())
+
+
+def max_stored_dates(
+    tickers: Iterable[str] | str | None = None,
+    *,
+    settings: Settings | None = None,
+    root: Path | str | None = None,
+) -> dict[str, date]:
+    """The newest stored session per ticker: `{"AAPL": date(2026, 9, 25), ...}`.
+
+    A ticker with no partition, or a partition holding no rows, is simply
+    absent from the mapping — there is no "never" date to invent, and a caller
+    asking "what do I already have?" wants to tell those apart from a stored
+    history that happens to be short.
+
+    This is where an incremental ingest starts: day 12 asks Yahoo from here
+    forward instead of re-requesting fifteen years every evening. It reads the
+    max out of DuckDB rather than loading the bars because Parquet keeps
+    per-row-group statistics, so the answer comes from the file's metadata and
+    the price columns are never touched.
+    """
+    if isinstance(tickers, str):
+        requested: list[str] | None = [tickers]
+    elif tickers is None:
+        requested = None
+    else:
+        requested = [str(ticker) for ticker in tickers]
+        if not requested:
+            return {}
+
+    files = _partition_files(settings, root, requested)
+    if not files:
+        return {}
+
+    sql = (
+        'SELECT "ticker", max("date") AS last_date '
+        "FROM read_parquet(?, hive_partitioning = true) "
+        'GROUP BY "ticker"'
+    )
+    with duckdb.connect() as con:
+        rows = con.execute(sql, [[str(path) for path in files]]).fetchall()
+
+    return {str(ticker): last for ticker, last in rows if last is not None}
+
+
+def max_stored_date(
+    ticker: str,
+    *,
+    settings: Settings | None = None,
+    root: Path | str | None = None,
+) -> date | None:
+    """The newest stored session for one ticker, or None if nothing is stored."""
+    return max_stored_dates([ticker], settings=settings, root=root).get(str(ticker).strip())
+
+
+# ---------------------------------------------------------------------------
+# Merging
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MergeResult:
+    """What :func:`merge_bars` did to one ticker's partition.
+
+    The three counts are the whole point: `added` is the number the acceptance
+    criterion of day 12 cares about — a second identical run has to report
+    zero — while `updated` says Yahoo revised a session that was already
+    stored, and `unchanged` says it sent the same bar back.
+    """
+
+    ticker: str
+    #: Sessions that were not in the store before.
+    added: int = 0
+    #: Sessions that were stored and came back with different values.
+    updated: int = 0
+    #: Sessions that were stored and came back identical.
+    unchanged: int = 0
+    #: Rows in the partition after the merge.
+    stored: int = 0
+    #: The file written, or None when nothing changed and nothing was written.
+    path: Path | None = None
+
+    @property
+    def changed(self) -> bool:
+        """True when the partition on disk was rewritten."""
+        return self.path is not None
+
+
+def _same_values(joined: pd.DataFrame, left: str, right: str) -> pd.Series:
+    """Row-wise equality over the price columns of a suffixed join.
+
+    NaN counts as equal to NaN here. `NaN != NaN` is right for arithmetic and
+    wrong for this question: a session Yahoo reports with no volume, re-fetched
+    and still reported with no volume, has not changed, and calling it a
+    revision would rewrite the partition on every single run.
+    """
+    same = pd.Series(True, index=joined.index)
+    for column in VALUE_COLUMNS:
+        this, that = joined[column + left], joined[column + right]
+        same &= (this == that) | (this.isna() & that.isna())
+    return same
+
+
+def _merge_one(
+    ticker: str,
+    incoming: pd.DataFrame,
+    *,
+    settings: Settings | None,
+    root: Path | str | None,
+) -> MergeResult:
+    """Fold one ticker's new bars into its stored partition."""
+    existing = read_bars(ticker, settings=settings, root=root)
+    if existing.empty:
+        (path,) = write_bars(incoming, settings=settings, root=root)
+        return MergeResult(ticker, added=len(incoming), stored=len(incoming), path=path)
+
+    is_new = ~incoming["date"].isin(existing["date"])
+    added = int(is_new.sum())
+
+    shared = incoming.loc[~is_new]
+    updated = unchanged = 0
+    if not shared.empty:
+        # Joined on the key rather than aligned on an index: the two frames
+        # arrive sorted but nothing guarantees the same rows in the same
+        # places, and a silent misalignment here would compare one session's
+        # close against another's.
+        joined = shared.merge(existing, on="date", suffixes=("_new", "_old"))
+        unchanged = int(_same_values(joined, "_new", "_old").sum())
+        updated = len(joined) - unchanged
+
+    if not added and not updated:
+        # Nothing to say that the file does not already say. Leaving it alone
+        # keeps a re-run free and, more usefully, keeps the partition's mtime
+        # honest: it means "this is when the data last changed".
+        log.debug("%s: already current, %d row(s) stored", ticker, len(existing))
+        return MergeResult(ticker, unchanged=unchanged, stored=len(existing))
+
+    # De-duplication on (ticker, date): every stored session the new frame also
+    # carries is dropped in favour of the new one, so a re-run overwrites where
+    # it overlaps instead of appending a second copy. conform_bars inside
+    # write_bars re-checks that, and would refuse the frame if a duplicate
+    # survived.
+    kept = existing.loc[~existing["date"].isin(incoming["date"])]
+    combined = pd.concat([kept, incoming], ignore_index=True)
+    (path,) = write_bars(combined, settings=settings, root=root)
+    log.debug(
+        "%s: +%d new, %d updated, %d unchanged, %d stored",
+        ticker,
+        added,
+        updated,
+        unchanged,
+        len(combined),
+    )
+    return MergeResult(
+        ticker,
+        added=added,
+        updated=updated,
+        unchanged=unchanged,
+        stored=len(combined),
+        path=path,
+    )
+
+
+def merge_bars(
+    frame: pd.DataFrame,
+    *,
+    settings: Settings | None = None,
+    root: Path | str | None = None,
+) -> list[MergeResult]:
+    """Fold a bar frame into the store, de-duplicating on `(ticker, date)`.
+
+    Where :func:`write_bars` replaces a ticker's partition with what it was
+    handed, this keeps the history and merges: sessions the store has never
+    seen are added, sessions it already holds are *overwritten* by the new
+    values, and stored sessions the frame says nothing about are left alone.
+    Re-running an ingest therefore converges instead of growing — the same bars
+    fetched twice produce one copy, not two.
+
+    Returns one :class:`MergeResult` per ticker in the frame, in ticker order.
+    A partition where nothing was added or updated is not rewritten at all, and
+    its result carries `path=None`.
+    """
+    incoming = conform_bars(frame)
+    if incoming.empty:
+        log.debug("merge_bars: nothing to merge")
+        return []
+
+    results = [
+        _merge_one(str(ticker), group.reset_index(drop=True), settings=settings, root=root)
+        for ticker, group in incoming.groupby("ticker", sort=True)
+    ]
+    log.info(
+        "merged %d bar(s) across %d ticker(s): %d new, %d updated, %d unchanged",
+        len(incoming),
+        len(results),
+        sum(result.added for result in results),
+        sum(result.updated for result in results),
+        sum(result.unchanged for result in results),
+    )
+    return results

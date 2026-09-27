@@ -123,6 +123,16 @@ def ingest(
         "--abort-after",
         help="Give up after this many consecutive failures (0 never gives up).",
     ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Re-request the whole window instead of only what the store is missing.",
+    ),
+    refetch_days: int = typer.Option(
+        ingest_module.DEFAULT_REFETCH_DAYS,
+        "--refetch-days",
+        help="Days of overlap re-requested before each ticker's newest stored bar.",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Fetch and report, but write nothing to the store."
     ),
@@ -131,6 +141,11 @@ def ingest(
     ),
 ) -> None:
     """Download daily bars for the universe into the data store.
+
+    Incremental by default: each ticker is asked for only what the store is
+    missing, and what comes back is merged on `(ticker, date)` — so running
+    this twice in a row writes nothing the second time. `--full` re-requests
+    the window whole.
 
     One bad symbol cannot stop the run: every ticker gets its own retries and
     its own status row, and the report at the end says what made it onto disk.
@@ -147,6 +162,8 @@ def ingest(
         pause=pause,
         abort_after=abort_after,
         write=not dry_run,
+        incremental=not full,
+        refetch_days=refetch_days,
         settings=settings,
     )
     ingest_module.render_console(report, console, show_all=show_all)

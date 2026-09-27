@@ -275,22 +275,39 @@ the file to open follows from the ticker alone. The `ticker` column is stored
 readable on its own.
 
 ```python
-from finmgr.data.store import read_bars, write_bars
+from finmgr.data.store import max_stored_dates, merge_bars, read_bars, write_bars
 
-write_bars(frame)                                    # frame in the schema above
+write_bars(frame)                                    # replace a ticker's partition
+merge_bars(frame)                                    # ... or fold it into what is there
 read_bars()                                          # everything stored
 read_bars("AAPL")                                    # one ticker
 read_bars(["AAPL", "SAN.MC"], start="2024-01-01")    # bounds are inclusive
+max_stored_dates()                                   # {"AAPL": date(2026, 9, 25), ...}
 ```
 
 `write_bars` replaces each ticker's partition whole — the file is always
 exactly what was last handed over for that symbol — writing to a temporary
 name and renaming over the target, so an interrupted run leaves the previous
-partition intact rather than a truncated file. Merging new bars into stored
-history is day 12's job and builds on this. Reads go through DuckDB rather
+partition intact rather than a truncated file. Reads go through DuckDB rather
 than `pd.read_parquet` because the filtering belongs next to the data: the
 date bound is pushed into the Parquet row groups and the rows the call did not
 ask for are never materialised.
+
+`merge_bars` is the write path an ingest actually uses. It keeps the stored
+history and folds the new frame into it, keyed on `(ticker, date)`: unseen
+sessions are added, sessions already on disk are **overwritten** by the new
+values, and stored sessions the frame says nothing about are left alone. It
+returns one `MergeResult` per ticker — `added`, `updated`, `unchanged`,
+`stored` and the path written — and a partition where nothing was added or
+updated is not rewritten at all, so its `path` is `None` and its mtime still
+means "this is when the data last changed". NaN counts as equal to NaN when
+comparing, or a session Yahoo reports with no volume would look like a
+revision on every run.
+
+`max_stored_dates` answers "how far does each ticker reach?" out of Parquet's
+own row-group statistics rather than by loading any bars, and is what makes an
+ingest incremental. A ticker with nothing stored is absent from the mapping
+rather than dated in 1970.
 
 `conform_bars()` is the single place the schema is enforced, and it runs on
 both the write and the read path — so what comes out is dtype-identical to
@@ -381,6 +398,7 @@ that it will partly fail:
 finmgr ingest                                  # every ticker in the universe
 finmgr ingest -t AAPL -t SAN.MC                # just these
 finmgr ingest --start 2024-01-01 --dry-run     # fetch and report, write nothing
+finmgr ingest --full                           # re-request the whole window
 ```
 
 - **A small delay between calls** — `--pause`, half a second by default.
@@ -398,10 +416,12 @@ finmgr ingest --start 2024-01-01 --dry-run     # fetch and report, write nothing
 
 Nothing raises for a ticker-level problem. What comes back is one status row
 per symbol — `ok`, `empty` (the request worked and the window holds no
-sessions, which is normal over a weekend), `failed` or `skipped` — carrying the
-rows, the window, the attempts spent and the error. Day 14 writes those rows to
-a manifest under `data/meta/`; today they are printed, and the command exits
-non-zero if anything failed or was skipped.
+sessions, which is normal over a weekend), `current` (the store already runs
+past the window, so nothing was requested), `failed` or `skipped` — carrying
+the rows fetched, how many of them were new, the window actually asked for,
+the attempts spent and the error. Day 14 writes those rows to a manifest under
+`data/meta/`; today they are printed, and the command exits non-zero if
+anything failed or was skipped.
 
 Each ticker is written to the store as soon as it arrives, rather than
 collected and written at the end, so a run that dies halfway keeps everything
@@ -410,6 +430,46 @@ it had already downloaded. And a run that is failing everywhere stops after
 marks the rest `skipped`: 100 symbols at 3 attempts and 6 seconds of backoff
 each is half an hour of pointless waiting when the cause is that the cable is
 out. Ctrl-C does the same thing — stop, keep what arrived, print the report.
+
+### Only what is missing, and only once
+
+`ingest` is **incremental** and **idempotent**. Before the loop starts it asks
+the store how far each ticker already reaches, and each symbol is then
+requested from its own newest stored bar rather than from `history_start` —
+less five days of deliberate overlap (`--refetch-days`), because the most
+recent bar may have been fetched with the market still open and Yahoo revises
+volume after the close. `--start` remains a floor, and a ticker with nothing
+stored still gets the full backfill.
+
+The overlap is free because the write path merges rather than appends: what
+comes back goes through `merge_bars`, keyed on `(ticker, date)`, so a session
+already on disk is overwritten in place. Re-running therefore converges
+instead of growing, and the status row separates **bars fetched** from bars
+that were actually **new**:
+
+```
+$ finmgr ingest -t AAPL -t SAN.MC --start 2026-06-01
+│ AAPL   │ ok │ 82 │ 82 │ 0 │ 2026-06-01 │ ... │     ← first run, nothing stored
+│ SAN.MC │ ok │ 85 │ 85 │ 0 │ 2026-06-01 │ ... │
+2 of 2 tickers ingested (ok=2); 167 bars fetched, 167 new, 0 updated in 1.2s
+
+$ finmgr ingest -t AAPL -t SAN.MC --start 2026-06-01
+│ AAPL   │ ok │  5 │  0 │ 0 │ 2026-09-20 │ ... │     ← only the overlap is asked for
+│ SAN.MC │ ok │  5 │  0 │ 0 │ 2026-09-20 │ ... │
+2 of 2 tickers ingested (ok=2); 10 bars fetched, 0 new, 0 updated in 1.3s
+```
+
+That second line is day 12's acceptance criterion: **zero new rows the second
+time**, with both Parquet files byte-for-byte what they were — an unchanged
+partition is not rewritten at all. `--full` turns the narrowing off and
+re-requests the window whole, which is what the day 13 backfill and any repair
+of a suspect partition want; it stays idempotent, because idempotence comes
+from the merge and not from the shorter window. A ticker whose store already
+runs past the requested `--end` is not asked at all and reports `current`.
+
+`tests/test_incremental.py` pins all of it offline, the criterion itself three
+ways: the report says zero, `read_bars()` returns a frame identical to the one
+before, and no partition's mtime moved.
 
 ### Pulling the cable
 

@@ -3,7 +3,8 @@
     from finmgr.data.ingest import ingest_universe
 
     report = ingest_universe()          # every ticker in config/universe.csv
-    report.rows                         # bars written
+    report.rows                         # bars fetched
+    report.added                        # ... of which the store had never seen
     report.failed                       # the ones that did not make it
 
 Day 10 fetches one ticker and raises when Yahoo says no. This module is the
@@ -35,7 +36,7 @@ and the error message. Day 14 writes those rows to a manifest under
 Two behaviours exist specifically for the day the network dies mid-run:
 
 *Each ticker is written as soon as it arrives* — :func:`ingest_ticker` fetches
-and calls `write_bars` before the loop moves on — so an interrupted run keeps
+and calls `merge_bars` before the loop moves on — so an interrupted run keeps
 everything it had already downloaded instead of losing the lot.
 
 *A run that is failing everywhere stops early.* After
@@ -45,9 +46,23 @@ seconds of backoff each is half an hour of pointless waiting when the cause is
 that the cable is out. `abort_after=0` disables it. A KeyboardInterrupt is handled the
 same way: stop, mark the rest skipped, return the report.
 
-The window is still the whole `history_start`..today by default; asking Yahoo
-only for what is missing is day 12, and the full fifteen-year backfill is day
-13.
+Day 12 adds the other half of being re-runnable: **incremental, and idempotent**.
+The store is asked how far each ticker already reaches
+(:func:`~finmgr.data.store.max_stored_dates`) and Yahoo is asked only from
+there forward, less :data:`DEFAULT_REFETCH_DAYS` days of deliberate overlap —
+a re-request of the last few sessions, because the most recent bar may have
+been fetched while the market was still open and Yahoo revises volume after
+the close. What comes back is folded in with
+:func:`~finmgr.data.store.merge_bars`, keyed on `(ticker, date)`, so an
+overlapping session is *overwritten* rather than appended. The status row
+therefore distinguishes bars fetched (`rows`) from bars that were actually new
+(`added`), and running `finmgr ingest` twice in a row adds nothing the second
+time: the overlap comes back identical, no partition is rewritten, and the
+report says `0 new`. `--full` turns the narrowing off and re-requests the whole
+window, which is what day 13's backfill wants.
+
+A ticker whose stored history already runs past the requested window is not
+asked at all: its status is `current`.
 """
 
 from __future__ import annotations
@@ -56,7 +71,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -69,7 +84,7 @@ from rich.table import Table
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data.fetch import fetch_daily
-from finmgr.data.store import as_date, write_bars
+from finmgr.data.store import as_date, max_stored_date, max_stored_dates, merge_bars
 from finmgr.data.universe import Company, load_universe
 
 #: Tries per ticker, including the first. Three is the roadmap's number and a
@@ -91,6 +106,16 @@ DEFAULT_PAUSE = 0.5
 #: Ten in a row is not ten bad symbols, it is the network. 0 disables it.
 DEFAULT_ABORT_AFTER = 10
 
+#: Calendar days of overlap an incremental run re-requests before the newest
+#: stored bar. Not zero, because the last stored session may have been fetched
+#: while the market was open — a partial bar, with the day's volume still
+#: accumulating — and Yahoo also revises the previous session's volume after
+#: the close. Five days covers a weekend and a bank holiday either side of it
+#: and costs one request that would have been made anyway. The overlap is
+#: harmless precisely because the write path merges on `(ticker, date)`:
+#: re-fetching a settled session rewrites nothing and counts as zero new rows.
+DEFAULT_REFETCH_DAYS = 5
+
 log = runlog.get_logger(__name__)
 
 
@@ -102,6 +127,9 @@ class Status(StrEnum):
     #: The request succeeded and the window holds no sessions. Not a failure:
     #: a re-run on a Sunday asks for a window with nothing in it.
     EMPTY = "empty"
+    #: Nothing was requested: the stored history already runs past the window.
+    #: Also not a failure — it is what an incremental re-run is *for*.
+    CURRENT = "current"
     #: Every attempt raised. The reason is in `detail`.
     FAILED = "failed"
     #: Never attempted, because the run stopped before reaching it.
@@ -126,6 +154,7 @@ class TickerIngest:
 
     ticker: str
     status: Status
+    #: Bars Yahoo returned. Not the same as bars stored — see `added`.
     rows: int = 0
     first_date: date | None = None
     last_date: date | None = None
@@ -133,19 +162,38 @@ class TickerIngest:
     seconds: float = 0.0
     written: bool = False
     detail: str = ""
+    #: Where this ticker was actually asked from, which on an incremental run
+    #: is its own stored history rather than the window the run was given.
+    #: None when nothing was requested.
+    asked_from: date | None = None
+    #: The newest bar already on disk when the run reached this ticker.
+    stored_max: date | None = None
+    #: Sessions the store had never seen. This is the number day 12's
+    #: acceptance criterion is about: zero, on the second identical run.
+    added: int = 0
+    #: Stored sessions Yahoo came back with different values for.
+    updated: int = 0
+    #: Stored sessions Yahoo came back with identically.
+    unchanged: int = 0
 
     @property
     def succeeded(self) -> bool:
-        """True when Yahoo answered — with bars or with an empty window."""
-        return self.status in (Status.OK, Status.EMPTY)
+        """True when the ticker is accounted for: bars, an empty window, or
+        a store that was already ahead of the one being asked for."""
+        return self.status in (Status.OK, Status.EMPTY, Status.CURRENT)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
             "status": str(self.status),
             "rows": self.rows,
+            "added": self.added,
+            "updated": self.updated,
+            "unchanged": self.unchanged,
             "first_date": self.first_date.isoformat() if self.first_date else None,
             "last_date": self.last_date.isoformat() if self.last_date else None,
+            "asked_from": self.asked_from.isoformat() if self.asked_from else None,
+            "stored_max": self.stored_max.isoformat() if self.stored_max else None,
             "attempts": self.attempts,
             "seconds": round(self.seconds, 3),
             "written": self.written,
@@ -166,6 +214,8 @@ class IngestReport:
     #: Why the loop stopped before the end, empty when it did not.
     stopped_early: str = ""
     run_id: str | None = None
+    #: Whether each ticker's window was narrowed to what the store was missing.
+    incremental: bool = True
 
     @property
     def succeeded(self) -> list[TickerIngest]:
@@ -182,8 +232,18 @@ class IngestReport:
 
     @property
     def rows(self) -> int:
-        """Bars ingested across every ticker."""
+        """Bars fetched across every ticker — including ones already stored."""
         return sum(result.rows for result in self.results)
+
+    @property
+    def added(self) -> int:
+        """Sessions the store had never seen. Zero on an idempotent re-run."""
+        return sum(result.added for result in self.results)
+
+    @property
+    def updated(self) -> int:
+        """Stored sessions this run overwrote with revised values."""
+        return sum(result.updated for result in self.results)
 
     @property
     def counts(self) -> Counter[str]:
@@ -201,13 +261,18 @@ class IngestReport:
         return (self.finished_at - self.started_at).total_seconds()
 
     def summary(self) -> str:
-        """One line: what succeeded, out of how many, in how long."""
+        """One line: what succeeded, what it changed, in how long.
+
+        `new` is the number to read on a re-run, and the reason the line does
+        not just say "bars": the second run of an evening fetches the overlap
+        again and writes none of it.
+        """
         counts = self.counts
         detail = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
-        ok = counts[str(Status.OK)] + counts[str(Status.EMPTY)]
         line = (
-            f"{ok} of {len(self.results)} tickers ingested "
-            f"({detail}); {self.rows} bars in {self.seconds:.1f}s"
+            f"{len(self.succeeded)} of {len(self.results)} tickers ingested "
+            f"({detail}); {self.rows} bars fetched, {self.added} new, "
+            f"{self.updated} updated in {self.seconds:.1f}s"
         )
         if self.interrupted:
             line += " — interrupted"
@@ -224,7 +289,10 @@ class IngestReport:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "interrupted": self.interrupted,
             "stopped_early": self.stopped_early,
+            "incremental": self.incremental,
             "rows": self.rows,
+            "added": self.added,
+            "updated": self.updated,
             "counts": dict(self.counts),
             "results": [result.as_dict() for result in self.results],
         }
@@ -320,6 +388,31 @@ def fetch_with_retries(
 # ---------------------------------------------------------------------------
 
 
+def incremental_start(
+    requested: date,
+    stored_max: date | None,
+    *,
+    refetch_days: int = DEFAULT_REFETCH_DAYS,
+) -> date:
+    """Where to actually start asking, given what the store already holds.
+
+    Pure, so the arithmetic that decides how much of Yahoo's history gets
+    re-downloaded every evening can be read and tested on its own.
+
+    With nothing stored the requested start stands — a new ticker gets the
+    full backfill. Otherwise it moves forward to `refetch_days` before the
+    newest stored bar: forward, because the history up to there is already on
+    disk, and not all the way to it, because the newest bar may be a partial
+    one caught mid-session and the one before it may still have its volume
+    revised. Never *before* the requested start, so `--start` stays a floor.
+    """
+    if refetch_days < 0:
+        raise ValueError(f"refetch_days must not be negative, got {refetch_days}")
+    if stored_max is None:
+        return requested
+    return max(requested, stored_max - timedelta(days=refetch_days))
+
+
 def ingest_ticker(
     ticker: str,
     start: date,
@@ -330,30 +423,62 @@ def ingest_ticker(
     factor: float = DEFAULT_BACKOFF_FACTOR,
     maximum: float = DEFAULT_MAX_BACKOFF,
     write: bool = True,
+    incremental: bool = True,
+    refetch_days: int = DEFAULT_REFETCH_DAYS,
+    stored_max: date | None = None,
     settings: Settings | None = None,
     root: Path | str | None = None,
     fetch: Fetcher | None = None,
     sleep: Sleeper | None = None,
 ) -> TickerIngest:
-    """Fetch one ticker, store it, and say what happened. Never raises.
+    """Fetch one ticker, merge it into the store, and say what happened.
 
-    "Never raises" is the whole point, and it covers the write as well as the
-    request: a full disk or a permission problem is this ticker's failure, not
-    the run's. The only thing that gets through is a KeyboardInterrupt, which
-    is the user asking for the run to stop rather than a symbol misbehaving.
+    Never raises — that is the whole point, and it covers the store as well as
+    the request: a full disk or a permission problem is this ticker's failure,
+    not the run's. The only thing that gets through is a KeyboardInterrupt,
+    which is the user asking for the run to stop rather than a symbol
+    misbehaving.
 
-    The write happens here, one ticker at a time, rather than being collected
-    and done at the end. A run that dies halfway through then keeps everything
-    it had already downloaded — which is the difference between losing fifteen
-    minutes and losing the lot.
+    `start` and `end` bound the window the *run* wants. With `incremental` set,
+    the start is moved forward to just before this ticker's newest stored bar,
+    so Yahoo is asked only for what is missing; `stored_max` is that date when
+    the caller already knows it, and is looked up here when it does not. Pass
+    `incremental=False` to re-request the window whole.
+
+    The store is updated here, one ticker at a time, rather than everything
+    being collected and written at the end. A run that dies halfway through
+    then keeps everything it had already downloaded — the difference between
+    losing fifteen minutes and losing the lot. It goes through
+    :func:`~finmgr.data.store.merge_bars`, so a session that was already on
+    disk is overwritten in place and counted as `updated` or `unchanged`
+    rather than `added`.
     """
     symbol = str(ticker).strip()
     started = time.monotonic()
     used = 0
+    first = start
+    last_stored = stored_max
+    added = updated = unchanged = 0
     try:
+        if incremental:
+            if last_stored is None:
+                last_stored = max_stored_date(symbol, settings=settings, root=root)
+            first = incremental_start(start, last_stored, refetch_days=refetch_days)
+            if first > end:
+                # The store runs past the window that was asked for, which is
+                # what an `--end` in the past looks like against a current
+                # store. Nothing to request, and nothing wrong.
+                return TickerIngest(
+                    ticker=symbol,
+                    status=Status.CURRENT,
+                    stored_max=last_stored,
+                    seconds=time.monotonic() - started,
+                    detail=f"stored through {last_stored}, past the requested {end}",
+                )
+
         bars, used = fetch_with_retries(
             symbol,
-            start,
+            first,
             end,
             attempts=attempts,
             backoff=backoff,
@@ -365,8 +490,11 @@ def ingest_ticker(
         )
         stored = False
         if write and not bars.empty:
-            write_bars(bars, settings=settings, root=root)
-            stored = True
+            for result in merge_bars(bars, settings=settings, root=root):
+                added += result.added
+                updated += result.updated
+                unchanged += result.unchanged
+                stored = stored or result.changed
     except Exception as exc:
         # Every failure mode of a scraper ends up here — a timeout, a 404, a
         # rate limit, a response that would not conform to the schema, a failed
@@ -383,6 +511,8 @@ def ingest_ticker(
             status=Status.FAILED,
             attempts=spent,
             seconds=time.monotonic() - started,
+            asked_from=first,
+            stored_max=last_stored,
             detail=detail,
         )
 
@@ -392,7 +522,9 @@ def ingest_ticker(
             status=Status.EMPTY,
             attempts=used,
             seconds=time.monotonic() - started,
-            detail=f"no sessions between {start} and {end}",
+            asked_from=first,
+            stored_max=last_stored,
+            detail=f"no sessions between {first} and {end}",
         )
     return TickerIngest(
         ticker=symbol,
@@ -403,6 +535,11 @@ def ingest_ticker(
         attempts=used,
         seconds=time.monotonic() - started,
         written=stored,
+        asked_from=first,
+        stored_max=last_stored,
+        added=added,
+        updated=updated,
+        unchanged=unchanged,
     )
 
 
@@ -446,6 +583,8 @@ def ingest_universe(
     pause: float = DEFAULT_PAUSE,
     abort_after: int = DEFAULT_ABORT_AFTER,
     write: bool = True,
+    incremental: bool = True,
+    refetch_days: int = DEFAULT_REFETCH_DAYS,
     settings: Settings | None = None,
     root: Path | str | None = None,
     fetch: Fetcher | None = None,
@@ -463,6 +602,13 @@ def ingest_universe(
     a KeyboardInterrupt, and `abort_after` consecutive failures — the shape a
     dead network makes, where continuing means hundreds of doomed requests with
     backoff between them.
+
+    `start`..`end` is the window the run wants, and with `incremental` set it
+    is a *bound* rather than the request: each ticker is asked only for what
+    its own stored history is missing, so the second run of an evening
+    downloads a handful of sessions instead of fifteen years and writes none of
+    them. `incremental=False` re-requests the window whole, which is what day
+    13's backfill and any repair of a suspect partition want.
     """
     sleeper = time.sleep if sleep is None else sleep
     symbols = [
@@ -473,14 +619,29 @@ def ingest_universe(
     run = runlog.current_run()
     started_at = datetime.now(UTC)
 
+    # One query for the whole store rather than one per ticker. It is only an
+    # optimisation: `ingest_ticker` looks its own up when it is not told, which
+    # is also the fallback if reading the store up front goes wrong — a
+    # partition nobody can read has to become that ticker's status row, not the
+    # run's traceback.
+    stored: dict[str, date] = {}
+    if incremental:
+        try:
+            stored = max_stored_dates(symbols, settings=settings, root=root)
+        except Exception as exc:
+            log.warning("could not read the stored dates up front (%s); asking per ticker", exc)
+
     log.info(
-        "ingesting %d ticker(s) from %s to %s (attempts=%d, pause=%.1fs, write=%s)",
+        "ingesting %d ticker(s) from %s to %s (attempts=%d, pause=%.1fs, write=%s, "
+        "incremental=%s, %d already stored)",
         len(symbols),
         first,
         last,
         attempts,
         pause,
         write,
+        incremental,
+        len(stored),
     )
 
     results: list[TickerIngest] = []
@@ -501,6 +662,9 @@ def ingest_universe(
                 factor=factor,
                 maximum=maximum,
                 write=write,
+                incremental=incremental,
+                refetch_days=refetch_days,
+                stored_max=stored.get(symbol),
                 settings=settings,
                 root=root,
                 fetch=fetch,
@@ -516,12 +680,14 @@ def ingest_universe(
 
         results.append(result)
         getattr(log, "info" if result.succeeded else "warning")(
-            "%s [%d/%d]: %s (%d bars%s)",
+            "%s [%d/%d]: %s (%d bars, %d new, %d updated%s)",
             symbol,
             position + 1,
             len(symbols),
             result.status,
             result.rows,
+            result.added,
+            result.updated,
             f", {result.detail}" if result.detail else "",
         )
         if on_result is not None:
@@ -559,6 +725,7 @@ def ingest_universe(
         interrupted=interrupted,
         stopped_early=stopped_early,
         run_id=run.run_id if run is not None else None,
+        incremental=incremental,
     )
     log.info("ingest finished: %s", report.summary())
     return report
@@ -575,6 +742,10 @@ def render_console(report: IngestReport, console: Console, *, show_all: bool = F
     This is what has to appear on screen after the cable comes out: the run may
     have got nowhere, but it still says exactly which tickers are on disk and
     why the others are not.
+
+    `rows` is what Yahoo sent and `new` is what the store did not already have.
+    The two differ by design on an incremental run — the overlap is re-fetched
+    deliberately — and a second run in the same evening is a column of zeroes.
     """
     succeeded = report.succeeded
     if succeeded:
@@ -582,6 +753,9 @@ def render_console(report: IngestReport, console: Console, *, show_all: bool = F
         table.add_column("ticker", style="bold")
         table.add_column("status")
         table.add_column("rows", justify="right")
+        table.add_column("new", justify="right")
+        table.add_column("upd", justify="right")
+        table.add_column("from")
         table.add_column("first bar")
         table.add_column("last bar")
         table.add_column("tries", justify="right")
@@ -591,6 +765,9 @@ def render_console(report: IngestReport, console: Console, *, show_all: bool = F
                 result.ticker,
                 str(result.status),
                 str(result.rows),
+                str(result.added),
+                str(result.updated),
+                result.asked_from.isoformat() if result.asked_from else "-",
                 result.first_date.isoformat() if result.first_date else "-",
                 result.last_date.isoformat() if result.last_date else "-",
                 str(result.attempts),
