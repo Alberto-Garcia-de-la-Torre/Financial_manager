@@ -62,7 +62,7 @@ These exist because the thing runs unattended and writes code.
 | Wrong branch | Run aborts |
 | No push access | Caught at preflight, not at 19:30 |
 | Agent edits `automation/` | Run fails — it can't rewrite its own runner |
-| Agent writes to `data/` | Run fails — market data stays out of git |
+| Agent un-ignores `data/` | Run fails — market data stays out of git (writing there is fine; it is gitignored) |
 | Agent changes nothing | Run fails rather than making an empty commit |
 | `make test` / `make lint` fails | Run fails, nothing is pushed |
 | Agent reports `BLOCKED` | Recorded as failed, work left on the branch |

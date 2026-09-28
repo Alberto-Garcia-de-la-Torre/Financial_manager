@@ -366,8 +366,10 @@ def build_prompt(step, cfg: dict, steps: list, state: dict) -> str:
           refactor unrelated code, do not add features the step did not ask for.
         - Never modify anything under `automation/` - that is the runner
           executing you right now.
-        - Never write to `data/`, and never commit files from it. Market data
-          does not belong in git.
+        - `data/` is the local market-data store. Running the project's own
+          code that writes there (ingest, backfill, manifests) is expected and
+          fine - it is gitignored. Never commit anything from it, and never
+          edit `.gitignore` to un-ignore it. Market data does not belong in git.
         - Do not run `git commit`, `git push`, `git checkout`, `git reset` or
           `git rebase`. The runner owns version control and will commit your work
           for you on the correct branch.
@@ -755,6 +757,8 @@ def cmd_run(cfg, args):
             return 1
 
         summary = report.get("summary") or f"implement day {step.n}"
+        # Agents sometimes echo the prefix themselves; don't write it twice.
+        summary = re.sub(r"^day\s*\d+\s*:\s*", "", summary, flags=re.IGNORECASE) or summary
         subject = f"day {step.n:02d}: {summary}"[:72]
         message = "\n".join([
             subject, "",
