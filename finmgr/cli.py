@@ -4,7 +4,8 @@ Six subcommands make up the daily pipeline, in the order they run:
 
     ingest -> check -> features -> train -> rank -> report
 
-`ingest` is real from day 11; the other five are still stubs. Each stub prints
+`ingest` is real from day 11; the other five are still stubs. Beside the
+pipeline, `coverage` (day 13) reports what the store holds per ticker. Each stub prints
 what it will do and exits non-zero, so nothing downstream can mistake "not
 written yet" for "ran successfully".
 
@@ -21,10 +22,13 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from finmgr import runlog
 from finmgr.config import load_settings
 from finmgr.data import ingest as ingest_module
+from finmgr.data import store
+from finmgr.data import universe as universe_module
 
 app = typer.Typer(
     name="finmgr",
@@ -173,6 +177,58 @@ def ingest(
             len(report.failed),
             len(report.skipped),
         )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def coverage(
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Report only this symbol; repeatable. Skips the universe file.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+) -> None:
+    """Print first date, last date and row count for every ticker.
+
+    Reads the store only — nothing is downloaded. The tickers are the
+    universe's, in file order, so a symbol the backfill never got onto disk
+    shows up as a row of dashes rather than going missing from the table.
+    Exits non-zero if any of them has no bars at all.
+    """
+    settings = load_settings()
+    symbols = ticker or universe_module.tickers(settings=settings)
+    frame = store.coverage(symbols, settings=settings)
+
+    table = Table(title="Stored daily bars")
+    table.add_column("ticker", style="bold")
+    table.add_column("first date")
+    table.add_column("last date")
+    table.add_column("rows", justify="right")
+    table.add_column("years", justify="right")
+    for row in frame.itertuples(index=False):
+        stored = row.rows > 0
+        years = (row.last_date - row.first_date).days / 365.25 if stored else None
+        table.add_row(
+            row.ticker,
+            row.first_date.isoformat() if stored else "-",
+            row.last_date.isoformat() if stored else "-",
+            str(row.rows) if stored else "[red]0[/red]",
+            f"{years:.1f}" if years is not None else "-",
+        )
+    console.print(table)
+
+    missing = frame.loc[frame["rows"] == 0, "ticker"].tolist()
+    held = frame.loc[frame["rows"] > 0]
+    summary = f"{len(held)} of {len(frame)} tickers stored; {int(frame['rows'].sum())} bars"
+    if not held.empty:
+        summary += f", {held['first_date'].min()} to {held['last_date'].max()}"
+    console.print(summary)
+    if missing:
+        log.warning("finmgr coverage: no bars stored for %s", ", ".join(missing))
         raise typer.Exit(code=1)
 
 

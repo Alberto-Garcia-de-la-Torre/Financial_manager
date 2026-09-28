@@ -453,6 +453,55 @@ def max_stored_dates(
     return {str(ticker): last for ticker, last in rows if last is not None}
 
 
+#: The columns of a :func:`coverage` frame, in order.
+COVERAGE_COLUMNS: tuple[str, ...] = ("ticker", "first_date", "last_date", "rows")
+
+
+def coverage(
+    tickers: Iterable[str] | str | None = None,
+    *,
+    settings: Settings | None = None,
+    root: Path | str | None = None,
+) -> pd.DataFrame:
+    """First date, last date and row count per ticker, in the order asked.
+
+    `tickers` None means everything stored, sorted. A ticker that was asked
+    about and has nothing on disk is *kept*, with zero rows and no dates —
+    after a backfill the question is "what is missing?", and a coverage table
+    that silently omits the gaps cannot answer it.
+
+    Like :func:`max_stored_dates` this is one aggregate query; the price
+    columns are never loaded.
+    """
+    if isinstance(tickers, str):
+        requested: list[str] | None = [tickers]
+    elif tickers is None:
+        requested = None
+    else:
+        requested = [str(ticker).strip() for ticker in tickers]
+
+    files = _partition_files(settings, root, requested)
+    found: dict[str, tuple[date, date, int]] = {}
+    if files:
+        sql = (
+            'SELECT "ticker", min("date"), max("date"), count(*) '
+            "FROM read_parquet(?, hive_partitioning = true) "
+            'GROUP BY "ticker"'
+        )
+        with duckdb.connect() as con:
+            rows = con.execute(sql, [[str(path) for path in files]]).fetchall()
+        found = {str(ticker): (first, last, int(n)) for ticker, first, last, n in rows}
+
+    order = sorted(found) if requested is None else requested
+    records = [(ticker, *found.get(ticker, (None, None, 0))) for ticker in order]
+    frame = pd.DataFrame(records, columns=list(COVERAGE_COLUMNS))
+    for column in ("first_date", "last_date"):
+        frame[column] = frame[column].astype(BAR_DTYPES["date"])
+    frame["rows"] = frame["rows"].astype("int64")
+    frame["ticker"] = frame["ticker"].astype(BAR_DTYPES["ticker"])
+    return frame
+
+
 def max_stored_date(
     ticker: str,
     *,

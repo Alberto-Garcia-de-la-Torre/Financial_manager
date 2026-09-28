@@ -471,6 +471,31 @@ runs past the requested `--end` is not asked at all and reports `current`.
 ways: the report says zero, `read_bars()` returns a frame identical to the one
 before, and no partition's mtime moved.
 
+### The full backfill, and what it left behind
+
+Fifteen years for all 100 tickers is one command, and what it produced is
+another:
+
+```bash
+finmgr ingest --full --all      # every ticker, from history_start (2010-01-01)
+finmgr coverage                 # first date, last date and rows per ticker
+```
+
+`--full` asks for the whole window whether or not anything is stored, so the
+backfill doubles as a repair; because the write merges on `(ticker, date)`, a
+second backfill changes nothing. The run on 2026-09-28 took 85 seconds for
+100 requests of about 4,200 sessions each, half a second apart: 100 of 100
+ok, 415,876 bars. A ticker that fails after its three attempts is simply
+re-run with `-t`.
+
+`finmgr coverage` reads the store and nothing else. It lists the universe in
+file order, one row per ticker, so a symbol that never made it onto disk shows
+up as a row of dashes with `0` rows instead of quietly dropping out of the
+table; the command then exits non-zero. `-t` narrows it to given symbols.
+Tickers that start later than 2010 do so because that is when they listed —
+Meta in 2012, AbbVie in 2013, Aena in 2015, DSM-Firmenich in 2023 — not
+because the download fell short.
+
 ### Pulling the cable
 
 Day 11's acceptance criterion is that pulling the network cable mid-run still
@@ -522,6 +547,8 @@ finmgr --help
 `finmgr ingest --help` for its options. The other five are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
+`finmgr coverage` sits beside the pipeline rather than in it: it reports what
+the store holds per ticker (see "The full backfill" above).
 
 `--log-level` is a global option, so it goes before the subcommand:
 
