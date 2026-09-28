@@ -234,6 +234,18 @@ def git(repo: Path, *args, check=True, capture=True) -> str:
     return (r.stdout or "").strip()
 
 
+def stage_all(repo: Path, check=True):
+    """Stage the day's work, never market data.
+
+    .gitignore is what keeps data/ out. An exclude pathspec like ":!data"
+    cannot do it: once data/ exists, git rejects any pathspec that names an
+    ignored path and the add fails outright. The unstage afterwards is the
+    backstop in case the ignore rule is ever removed.
+    """
+    git(repo, "add", "-A", check=check)
+    git(repo, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", "data", check=False)
+
+
 def notify(cfg: dict, title: str, body: str, urgent=False):
     if not flag(cfg, "NOTIFY"):
         return
@@ -775,7 +787,7 @@ def cmd_run(cfg, args):
             "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>",
         ])
 
-        git(repo, "add", "-A", "--", ".", ":!data")
+        stage_all(repo)
         git(repo, "commit", "-m", message)
         sha = git(repo, "rev-parse", "--short", "HEAD")
         info(f"  committed {sha}: {subject}")
@@ -900,7 +912,7 @@ def record_failure(cfg, state, step, reason, log_path, branch_mode, repo):
     # Keep the partial work for inspection, but never on the base branch.
     if branch_mode == "branch":
         if git(repo, "status", "--porcelain"):
-            git(repo, "add", "-A", "--", ".", ":!data", check=False)
+            stage_all(repo, check=False)
             git(repo, "commit", "-m",
                 f"WIP day {step.n:02d}: {step.title} (FAILED)\n\n{reason}\n\n"
                 f"Attempt-For-Day: {step.n}", check=False)
