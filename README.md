@@ -419,9 +419,9 @@ per symbol — `ok`, `empty` (the request worked and the window holds no
 sessions, which is normal over a weekend), `current` (the store already runs
 past the window, so nothing was requested), `failed` or `skipped` — carrying
 the rows fetched, how many of them were new, the window actually asked for,
-the attempts spent and the error. Day 14 writes those rows to a manifest under
-`data/meta/`; today they are printed, and the command exits non-zero if
-anything failed or was skipped.
+the attempts spent and the error. They are printed, recorded in the ingestion
+manifest (below), and the command exits non-zero if anything failed or was
+skipped.
 
 Each ticker is written to the store as soon as it arrives, rather than
 collected and written at the end, so a run that dies halfway keeps everything
@@ -495,6 +495,36 @@ table; the command then exits non-zero. `-t` narrows it to given symbols.
 Tickers that start later than 2010 do so because that is when they listed —
 Meta in 2012, AbbVie in 2013, Aena in 2015, DSM-Firmenich in 2023 — not
 because the download fell short.
+
+### The ingestion manifest
+
+Every `finmgr ingest` that writes (anything but `--dry-run`) appends its status
+rows to `data/meta/ingest_runs.parquet`: one row per ticker per run, never
+rewritten, so "why is Iberdrola stale?" is answered from a file instead of from
+memory. Each row carries the `run_id` from the run log, the `status`,
+`rows_fetched` and `rows_written` (sessions the run actually changed on disk:
+`added + updated`), `min_date` and `max_date` of the bars fetched, the
+`asked_from` date and the `stored_max` the store held beforehand, the attempts,
+and an `error` message for `failed` and `skipped` rows. The run-level facts —
+window, start and finish times, whether it was incremental or stopped early —
+are repeated on each row, so filtering on `ticker` gives that symbol's whole
+ingestion history without a join.
+
+```bash
+finmgr ingest --report          # the last recorded run, from the manifest alone
+```
+
+`--report` downloads nothing and never opens the bar store. It prints the same
+tables and summary line the run printed, headed by its run id and window, and
+exits non-zero if that run was incomplete — so it doubles as a check of last
+night's ingest. With nothing recorded yet it says so and exits 1. For anything
+deeper, the file is plain Parquet:
+
+```python
+from finmgr.data.manifest import read_manifest
+runs = read_manifest()
+runs[runs.ticker == "IBE.MC"].tail()     # Iberdrola, run by run
+```
 
 ### Pulling the cable
 

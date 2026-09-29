@@ -4,8 +4,10 @@ Six subcommands make up the daily pipeline, in the order they run:
 
     ingest -> check -> features -> train -> rank -> report
 
-`ingest` is real from day 11; the other five are still stubs. Beside the
-pipeline, `coverage` (day 13) reports what the store holds per ticker. Each stub prints
+`ingest` is real from day 11, and from day 14 records every run in
+`data/meta/ingest_runs.parquet` — `ingest --report` reads the last one back.
+The other five are still stubs. Beside the pipeline, `coverage` (day 13)
+reports what the store holds per ticker. Each stub prints
 what it will do and exits non-zero, so nothing downstream can mistake "not
 written yet" for "ran successfully".
 
@@ -25,8 +27,9 @@ from rich.console import Console
 from rich.table import Table
 
 from finmgr import runlog
-from finmgr.config import load_settings
+from finmgr.config import Settings, load_settings
 from finmgr.data import ingest as ingest_module
+from finmgr.data import manifest as manifest_module
 from finmgr.data import store
 from finmgr.data import universe as universe_module
 
@@ -143,6 +146,11 @@ def ingest(
     show_all: bool = typer.Option(
         False, "--all", "-a", help="List every ingested ticker, not just the first twenty."
     ),
+    report_only: bool = typer.Option(
+        False,
+        "--report",
+        help="Download nothing: summarise the last recorded run from the manifest.",
+    ),
 ) -> None:
     """Download daily bars for the universe into the data store.
 
@@ -151,12 +159,21 @@ def ingest(
     this twice in a row writes nothing the second time. `--full` re-requests
     the window whole.
 
+    Every run that writes is recorded in `data/meta/ingest_runs.parquet`, one
+    row per ticker. `--report` prints the last recorded run from that file
+    alone — nothing is fetched, the store is not opened, and the fetch options
+    are ignored.
+
     One bad symbol cannot stop the run: every ticker gets its own retries and
     its own status row, and the report at the end says what made it onto disk.
     Exits non-zero if anything failed or was skipped — with the report printed
     either way.
     """
     settings = load_settings()
+    if report_only:
+        _report_last_run(settings, show_all=show_all)
+        return
+
     report = ingest_module.ingest_universe(
         ticker or None,
         start=start,
@@ -170,6 +187,10 @@ def ingest(
         refetch_days=refetch_days,
         settings=settings,
     )
+    if not dry_run:
+        # After the run rather than per ticker: the loop never raises, so the
+        # report is complete by the time it returns, interrupted runs included.
+        manifest_module.append_run(report, settings=settings)
     ingest_module.render_console(report, console, show_all=show_all)
     if not report.complete:
         log.warning(
@@ -177,6 +198,29 @@ def ingest(
             len(report.failed),
             len(report.skipped),
         )
+        raise typer.Exit(code=1)
+
+
+def _report_last_run(settings: Settings, *, show_all: bool) -> None:
+    """Print the newest run in the manifest; fail if there is none, or it failed.
+
+    The exit code mirrors the run being reported, so `finmgr ingest --report`
+    in a script says whether last night's ingest was complete.
+    """
+    path = manifest_module.manifest_path(settings=settings)
+    report = manifest_module.last_run(manifest_module.read_manifest(path=path))
+    if report is None:
+        log.warning("finmgr ingest --report: no runs recorded in %s", path)
+        raise typer.Exit(code=1)
+
+    started = report.started_at.isoformat(timespec="seconds") if report.started_at else "?"
+    mode = "incremental" if report.incremental else "full"
+    console.print(
+        f"Last ingest run [bold]{report.run_id}[/bold], started {started}, "
+        f"{mode}, window {report.start} to {report.end}"
+    )
+    ingest_module.render_console(report, console, show_all=show_all)
+    if not report.complete:
         raise typer.Exit(code=1)
 
 

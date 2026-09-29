@@ -30,8 +30,8 @@ that ticker's status row, and the loop moves on to the next one.
 So nothing here raises for a ticker-level problem. The result is an
 :class:`IngestReport`: one :class:`TickerIngest` per symbol, saying `ok`,
 `empty`, `failed` or `skipped`, with the rows, the window, the attempts spent
-and the error message. Day 14 writes those rows to a manifest under
-`data/meta/`; today they are printed and returned.
+and the error message. :mod:`finmgr.data.manifest` (day 14) writes those rows
+to `data/meta/ingest_runs.parquet`; `finmgr ingest` records every run there.
 
 Two behaviours exist specifically for the day the network dies mid-run:
 
@@ -147,8 +147,8 @@ Sleeper = Callable[[float], None]
 class TickerIngest:
     """One status row: what this run did about one ticker.
 
-    Returned rather than raised, for every outcome. Day 14 turns these into
-    `data/meta/ingest_runs.parquet`, which is how "why is Iberdrola stale?"
+    Returned rather than raised, for every outcome. :mod:`finmgr.data.manifest`
+    turns these into `data/meta/ingest_runs.parquet`, which is how "why is Iberdrola stale?"
     gets answered in eight weeks without guessing.
     """
 
