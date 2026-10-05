@@ -270,6 +270,15 @@ def test_a_clean_report_says_so_explicitly() -> None:
 # ---------------------------------------------------------------------------
 
 
+def live_bars() -> pd.DataFrame:
+    """Recent bars by the real clock, which is the one `main()` judges against.
+
+    `TODAY` is fixed for the unit tests above, but `main()` takes its date from
+    `datetime.now()`, so bars ending on `TODAY` turn stale a week after it.
+    """
+    return recent_bars(last=datetime.now(ZoneInfo("Europe/Madrid")).date())
+
+
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> Callable[[dict[str, object]], None]:
     """Replace the module's network call and its sleeps for a `main()` run."""
@@ -286,7 +295,7 @@ def test_main_exits_zero_when_every_ticker_returns_bars(
     write_settings: Callable[..., Path],
     tmp_path: Path,
 ) -> None:
-    offline({"AAPL": recent_bars(), "SAN.MC": recent_bars()})
+    offline({"AAPL": live_bars(), "SAN.MC": live_bars()})
     universe = tmp_path / "universe.csv"
     universe.write_text(
         "ticker,name,exchange,currency,sector,country\n"
@@ -310,7 +319,7 @@ def test_main_exits_non_zero_when_a_ticker_is_dead(
     tmp_path: Path,
 ) -> None:
     """A dead ticker must fail the run, not be mentioned in passing."""
-    offline({"AAPL": recent_bars(), "AIR": empty_frame()})
+    offline({"AAPL": live_bars(), "AIR": empty_frame()})
     universe = tmp_path / "universe.csv"
     universe.write_text(
         "ticker,name,exchange,currency,sector,country\n"
