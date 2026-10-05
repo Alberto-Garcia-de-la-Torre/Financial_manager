@@ -7,7 +7,9 @@ Six subcommands make up the daily pipeline, in the order they run:
 `ingest` is real from day 11, and from day 14 records every run in
 `data/meta/ingest_runs.parquet` — `ingest --report` reads the last one back.
 The other five are still stubs. Beside the pipeline, `coverage` (day 13)
-reports what the store holds per ticker. Each stub prints
+reports what the store holds per ticker, and `actions` (day 15) ingests splits
+and dividends into `data/actions/` — `actions --show` prints them back out of
+the store. Each stub prints
 what it will do and exits non-zero, so nothing downstream can mistake "not
 written yet" for "ran successfully".
 
@@ -28,6 +30,7 @@ from rich.table import Table
 
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
+from finmgr.data import actions as actions_module
 from finmgr.data import ingest as ingest_module
 from finmgr.data import manifest as manifest_module
 from finmgr.data import store
@@ -274,6 +277,100 @@ def coverage(
     if missing:
         log.warning("finmgr coverage: no bars stored for %s", ", ".join(missing))
         raise typer.Exit(code=1)
+
+
+@app.command()
+def actions(
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Only this symbol; repeatable. Skips the universe file.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    start: str = typer.Option(
+        None, "--start", help="First date (default: history_start from settings)."
+    ),
+    end: str = typer.Option(None, "--end", help="Last date, inclusive (default: today)."),
+    show: bool = typer.Option(
+        False, "--show", help="Download nothing: print the stored actions instead."
+    ),
+    kind: str = typer.Option(
+        None, "--kind", help="With --show: only 'split' or 'dividend'.", metavar="KIND"
+    ),
+) -> None:
+    """Ingest splits and dividends into data/actions/, or print them with --show.
+
+    Without --show every ticker's actions are fetched for the whole window and
+    merged into the store on (ticker, date, action); exits non-zero if any
+    ticker failed. With --show the store alone is read and printed.
+    """
+    settings = load_settings()
+    if show:
+        _show_actions(settings, ticker, kind=kind, start=start, end=end)
+        return
+
+    results = actions_module.ingest_actions(ticker or None, start=start, end=end, settings=settings)
+    table = Table(title="Corporate actions")
+    table.add_column("ticker", style="bold")
+    table.add_column("splits", justify="right")
+    table.add_column("dividends", justify="right")
+    table.add_column("new", justify="right")
+    table.add_column("error", overflow="fold")
+    for result in results:
+        table.add_row(
+            result.ticker,
+            str(result.splits),
+            str(result.dividends),
+            str(result.added),
+            f"[red]{result.error}[/red]" if result.error else "",
+        )
+    console.print(table)
+    failed = [result.ticker for result in results if not result.ok]
+    console.print(
+        f"{len(results) - len(failed)} of {len(results)} tickers; "
+        f"{sum(r.splits for r in results)} splits, {sum(r.dividends for r in results)} dividends, "
+        f"{sum(r.added for r in results)} new"
+    )
+    if failed:
+        log.warning("finmgr actions: failed for %s", ", ".join(failed))
+        raise typer.Exit(code=1)
+
+
+def _show_actions(
+    settings: Settings,
+    tickers: list[str] | None,
+    *,
+    kind: str | None,
+    start: str | None,
+    end: str | None,
+) -> None:
+    """Print stored actions; fail if there are none to print."""
+    try:
+        frame = actions_module.read_actions(
+            tickers or None, action=kind, start=start, end=end, settings=settings
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if frame.empty:
+        log.warning("finmgr actions --show: nothing stored for that selection")
+        raise typer.Exit(code=1)
+
+    table = Table(title="Stored corporate actions")
+    table.add_column("ticker", style="bold")
+    table.add_column("date")
+    table.add_column("action")
+    table.add_column("value", justify="right")
+    for row in frame.itertuples(index=False):
+        table.add_row(
+            row.ticker,
+            row.date.isoformat(),
+            row.action,
+            actions_module.describe(row.action, row.value),
+        )
+    console.print(table)
 
 
 @app.command()
