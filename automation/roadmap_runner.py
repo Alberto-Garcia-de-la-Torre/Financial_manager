@@ -374,8 +374,9 @@ def build_prompt(step, cfg: dict, steps: list, state: dict) -> str:
 
         ## Hard rules
 
-        - Do ONLY this step. Do not start the next one, do not "while I'm here"
-          refactor unrelated code, do not add features the step did not ask for.
+        - If code or tests from an earlier day are broken, fix them as part of
+          today's work and say what you fixed, and why, in NOTES. The runner
+          commits everything together with today's step.
         - Never modify anything under `automation/` - that is the runner
           executing you right now.
         - `data/` is the local market-data store. Running the project's own
