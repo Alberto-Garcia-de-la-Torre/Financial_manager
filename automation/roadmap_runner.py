@@ -25,6 +25,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
@@ -325,6 +326,30 @@ def preflight(cfg: dict, strict: bool) -> list:
                 "Switch back or set BASE_BRANCH.")
 
     return problems
+
+
+def return_to_base(cfg: dict, repo: Path):
+    """Undo a run that died before it could clean up after itself.
+
+    A clean tree parked on a roadmap/ branch is what a killed run leaves
+    behind (power off, SIGKILL). Nothing on it can be lost by leaving it -
+    its commits stay on the branch - so go back to the base branch rather
+    than let strict preflight block every remaining evening. A dirty tree is
+    left alone: that might be your own work.
+    """
+    base = cfg["BASE_BRANCH"]
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+    if branch == base or not branch.startswith("roadmap/"):
+        return
+    if git(repo, "status", "--porcelain", check=False):
+        return
+    ok, err = try_git(repo, "checkout", base)
+    if not ok:
+        warn(f"left on {branch} and could not return to {base}: {err}")
+        return
+    warn(f"was left on {branch} by an interrupted run - back on {base}")
+    if not git(repo, "rev-list", f"{base}..{branch}", check=False):
+        try_git(repo, "branch", "-D", branch)   # empty: nothing to keep
 
 
 # --------------------------------------------------------------------------
@@ -717,6 +742,7 @@ def cmd_run(cfg, args):
         info(prompt)
         return 0
 
+    return_to_base(cfg, repo)
     problems = preflight(cfg, strict=True)
     if problems:
         msg = "; ".join(p.splitlines()[0] for p in problems)
@@ -737,6 +763,13 @@ def cmd_run(cfg, args):
         return 1
 
     info(f"Day {step.n:02d} - {step.title}")
+
+    # systemd stops the unit with SIGTERM (shutdown, timeout). Python's default
+    # handler dies on the spot, skipping the rescue below and stranding the
+    # repo on the day branch. Turn it into an exception the rescue can catch.
+    def _on_sigterm(signum, frame):
+        raise SystemExit(f"killed by signal {signum}")
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     # Start from a current base branch.
     git(repo, "fetch", "origin", "--quiet", check=False)
