@@ -9,7 +9,8 @@ Six subcommands make up the daily pipeline, in the order they run:
 The other five are still stubs. Beside the pipeline, `coverage` (day 13)
 reports what the store holds per ticker, and `actions` (day 15) ingests splits
 and dividends into `data/actions/` — `actions --show` prints them back out of
-the store. Each stub prints
+the store — and `adjusted` (day 16) builds the back-adjusted close from both,
+with `--compare` checking it against Yahoo's. Each stub prints
 what it will do and exits non-zero, so nothing downstream can mistake "not
 written yet" for "ran successfully".
 
@@ -22,7 +23,10 @@ itself, so the closing line gets written even when a command fails or raises.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
+from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import typer
 from rich.console import Console
@@ -31,9 +35,10 @@ from rich.table import Table
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
+from finmgr.data import adjcheck, store
+from finmgr.data import adjust as adjust_module
 from finmgr.data import ingest as ingest_module
 from finmgr.data import manifest as manifest_module
-from finmgr.data import store
 from finmgr.data import universe as universe_module
 
 app = typer.Typer(
@@ -276,6 +281,110 @@ def coverage(
     console.print(summary)
     if missing:
         log.warning("finmgr coverage: no bars stored for %s", ", ".join(missing))
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def adjusted(
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Only this symbol; repeatable. Skips the universe file.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    compare: bool = typer.Option(
+        False, "--compare", help="Check against Yahoo's auto_adjust=True close (online)."
+    ),
+    report: Annotated[
+        Path | None,
+        typer.Option(
+            "--report", help="With --compare: also write a Markdown report here.", metavar="PATH"
+        ),
+    ] = None,
+    rows: int = typer.Option(5, "--rows", help="Without --compare: sessions to print per ticker."),
+) -> None:
+    """Print our back-adjusted close, or check it against Yahoo's with --compare.
+
+    Without --compare the store alone is read and the last few sessions of
+    each --ticker are printed with their split and dividend factors. With
+    --compare every ticker is checked against Yahoo and each one diverging by
+    more than 0.5% is listed with its cause; exits non-zero if any divergence
+    has no cause or any ticker could not be compared.
+    """
+    settings = load_settings()
+    if not compare:
+        if not ticker:
+            raise typer.BadParameter("name at least one --ticker, or pass --compare")
+        frame = adjust_module.read_adjusted(ticker, settings=settings)
+        if frame.empty:
+            log.warning("finmgr adjusted: nothing stored for %s", ", ".join(ticker))
+            raise typer.Exit(code=1)
+        table = Table(title="Back-adjusted close")
+        for column in adjust_module.ADJUSTED_COLUMNS:
+            table.add_column(column, justify="left" if column in ("ticker", "date") else "right")
+        for _, group in frame.groupby("ticker", sort=False):
+            for row in group.tail(rows).itertuples(index=False):
+                table.add_row(
+                    row.ticker,
+                    row.date.isoformat(),
+                    f"{row.close:.4f}",
+                    f"{row.split_factor:.6f}",
+                    f"{row.dividend_factor:.6f}",
+                    f"{row.adj_close:.4f}",
+                )
+        console.print(table)
+        return
+
+    results = adjcheck.compare_universe(ticker or None, settings=settings)
+    diverging = sorted((r for r in results if r.diverges), key=lambda r: r.divergence, reverse=True)
+    table = Table(title=f"Divergence over {adjcheck.DIVERGENCE_THRESHOLD:.1%} from Yahoo")
+    table.add_column("ticker", style="bold")
+    table.add_column("max", justify="right")
+    table.add_column("worst", justify="left")
+    table.add_column("closes", justify="right")
+    table.add_column("dividends", justify="right")
+    table.add_column("method", justify="right")
+    table.add_column("cause", overflow="fold")
+    for r in diverging:
+        table.add_row(
+            r.ticker,
+            f"{r.divergence:.2%}",
+            str(r.worst_date),
+            f"{r.from_closes:.2%}",
+            f"{r.from_dividends:.2%}",
+            f"{r.from_method:.2%}",
+            "\n".join(r.causes) if r.causes else "[red]unexplained[/red]",
+        )
+    console.print(table)
+    failed = [r for r in results if r.error]
+    unexplained = [r for r in diverging if not r.explained]
+    for r in failed:
+        console.print(f"[red]{r.ticker}: {r.error}[/red]")
+    console.print(
+        f"{len(diverging)} of {len(results)} tickers diverge; "
+        f"{len(unexplained)} unexplained; {len(failed)} not compared"
+    )
+    if report is not None:
+        run = runlog.current_run()
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            adjcheck.render_markdown(
+                results,
+                checked_at=datetime.now(ZoneInfo(settings.timezone)),
+                run_id=run.run_id if run is not None else None,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"wrote {report}")
+    if unexplained or failed:
+        log.warning(
+            "finmgr adjusted --compare: unexplained %s; not compared %s",
+            ", ".join(r.ticker for r in unexplained) or "-",
+            ", ".join(r.ticker for r in failed) or "-",
+        )
         raise typer.Exit(code=1)
 
 

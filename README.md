@@ -557,6 +557,33 @@ Exit code 1, no traceback, and AAPL's and MSFT's bars are on disk. The same
 failure is pinned offline in `tests/test_ingest.py`, so it is checked by
 `make test` on a machine with no network at all.
 
+### Adjusted close
+
+The store keeps raw closes and, in `data/actions/` (day 15), the splits and
+dividends as separate facts. `finmgr.data.adjust` combines them into a
+back-adjusted close: every close before a dividend's ex-date is scaled by
+`1 - dividend / previous close`, and the newest session stays at its raw close.
+Yahoo's raw bars already have splits applied, so a split is only applied where
+the bars still show it.
+
+```bash
+finmgr adjusted -t SAN.MC                                     # from the store, offline
+finmgr adjusted --compare --report docs/adjusted_divergences.md   # against Yahoo
+```
+
+`--compare` checks every ticker against Yahoo's `auto_adjust=True` close and
+lists each one that diverges by more than 0.5% on any session. It splits each
+gap into three parts: raw closes, dividends, and Yahoo's own method. It also
+writes out the cause, and exits non-zero if any divergence has none. The last
+run is in [`docs/adjusted_divergences.md`](docs/adjusted_divergences.md). US
+and Asian listings agree to about one part in a million. The divergences come
+from three causes:
+
+- a stale newest bar stored mid-session;
+- Yahoo's pence error on the London listings;
+- Yahoo applying UBS's and Equinor's USD-declared dividends against a CHF or
+  NOK price.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -578,7 +605,9 @@ finmgr --help
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what
-the store holds per ticker (see "The full backfill" above).
+the store holds per ticker (see "The full backfill" above). Beside it,
+`finmgr actions` ingests splits and dividends (day 15), and `finmgr adjusted`
+builds and checks the adjusted close (day 16, see "Adjusted close" above).
 
 `--log-level` is a global option, so it goes before the subcommand:
 
