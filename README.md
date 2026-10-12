@@ -584,6 +584,32 @@ from three causes:
 - Yahoo applying UBS's and Equinor's USD-declared dividends against a CHF or
   NOK price.
 
+### Exchange calendars
+
+A missing bar on 2024-03-29 for SAN.MC is not a gap: that was Good Friday and
+Madrid was shut. `finmgr.data.calendars` checks each ticker against its venue's
+calendar from [`exchange_calendars`](https://github.com/gerrymanoim/exchange_calendars).
+The venue is the universe's `exchange` column, already a MIC such as XNYS,
+XNAS, XMAD, XPAR, XETR or XAMS. The check then lists the sessions the store
+genuinely lacks, with holidays excluded.
+
+```bash
+finmgr sessions --year 2024              # tickers with gaps, off-calendar bars or closures
+finmgr sessions -y 2024 -t SAN.MC --all  # expected vs stored for one ticker
+```
+
+A ticker is checked from its first stored bar (or 1 January) to 31 December
+(or yesterday). So a mid-year listing is not penalised for the months before
+it existed. Bars dated on a day the venue was closed are listed as
+`off calendar`. The command exits non-zero if either list is non-empty.
+Closures announced at short notice, which the library does not carry, go in
+`UNSCHEDULED_CLOSURES` with a reason. One example is the typhoon that shut
+Taipei on 2024-10-31. These closures are shown as excused rather than dropped.
+With that one exclusion, all 100 tickers are complete for 2024. Older years
+still show disagreements between the calendar and Yahoo, for example
+Paris on 24 and 31 December 2010. Triaging them belongs to day 19's
+`finmgr check`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -608,6 +634,8 @@ non-zero so nothing mistakes an unwritten stage for a successful one.
 the store holds per ticker (see "The full backfill" above). Beside it,
 `finmgr actions` ingests splits and dividends (day 15), and `finmgr adjusted`
 builds and checks the adjusted close (day 16, see "Adjusted close" above).
+`finmgr sessions` (day 17) lists the sessions missing against each venue's
+exchange calendar (see "Exchange calendars" above).
 
 `--log-level` is a global option, so it goes before the subcommand:
 

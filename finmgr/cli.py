@@ -10,7 +10,9 @@ The other five are still stubs. Beside the pipeline, `coverage` (day 13)
 reports what the store holds per ticker, and `actions` (day 15) ingests splits
 and dividends into `data/actions/` — `actions --show` prints them back out of
 the store — and `adjusted` (day 16) builds the back-adjusted close from both,
-with `--compare` checking it against Yahoo's. Each stub prints
+with `--compare` checking it against Yahoo's. `sessions` (day 17) holds the
+store against each venue's exchange calendar and lists the sessions genuinely
+missing in a year, holidays excluded. Each stub prints
 what it will do and exits non-zero, so nothing downstream can mistake "not
 written yet" for "ran successfully".
 
@@ -23,7 +25,7 @@ itself, so the closing line gets written even when a command fails or raises.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -35,7 +37,7 @@ from rich.table import Table
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
-from finmgr.data import adjcheck, store
+from finmgr.data import adjcheck, calendars, store
 from finmgr.data import adjust as adjust_module
 from finmgr.data import ingest as ingest_module
 from finmgr.data import manifest as manifest_module
@@ -282,6 +284,78 @@ def coverage(
     if missing:
         log.warning("finmgr coverage: no bars stored for %s", ", ".join(missing))
         raise typer.Exit(code=1)
+
+
+@app.command()
+def sessions(
+    year: int = typer.Option(..., "--year", "-y", help="Calendar year to check, e.g. 2024."),
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Only this universe symbol; repeatable.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    show_all: bool = typer.Option(
+        False, "--all", "-a", help="List every ticker, not just those with gaps or closures."
+    ),
+) -> None:
+    """List genuinely missing sessions per ticker for one year, holidays excluded.
+
+    Each ticker is held against its venue's exchange calendar (the universe's
+    `exchange` column), from its first stored bar or 1 January to 31 December
+    or yesterday. Reads the store only. Exits non-zero if any session is
+    missing or any bar sits on a day the venue was closed.
+    """
+    settings = load_settings()
+    try:
+        gaps = calendars.session_gaps(ticker or None, year=year, settings=settings)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    table = Table(title=f"Sessions against the exchange calendar, {year}")
+    table.add_column("ticker", style="bold")
+    table.add_column("venue")
+    table.add_column("expected", justify="right")
+    table.add_column("stored", justify="right")
+    table.add_column("missing", overflow="fold")
+    table.add_column("off calendar", overflow="fold")
+    table.add_column("excused closures", overflow="fold")
+    for gap in gaps:
+        if not (show_all or gap.missing or gap.off_calendar or gap.excused):
+            continue
+        table.add_row(
+            gap.ticker,
+            gap.venue,
+            str(gap.expected),
+            str(gap.stored),
+            f"[red]{_dates(gap.missing)}[/red]" if gap.missing else "-",
+            f"[red]{_dates(gap.off_calendar)}[/red]" if gap.off_calendar else "-",
+            "\n".join(f"{day} {why}" for day, why in gap.excused) or "-",
+        )
+    console.print(table)
+
+    dirty = [gap for gap in gaps if not gap.clean]
+    console.print(
+        f"{len(gaps) - len(dirty)} of {len(gaps)} tickers complete for {year}; "
+        f"{sum(len(g.missing) for g in gaps)} missing sessions, "
+        f"{sum(len(g.off_calendar) for g in gaps)} off-calendar bars, "
+        f"{sum(len(g.excused) for g in gaps)} excused closures"
+    )
+    if dirty:
+        log.warning(
+            "finmgr sessions: gaps against the calendar for %s",
+            ", ".join(gap.ticker for gap in dirty),
+        )
+        raise typer.Exit(code=1)
+
+
+def _dates(days: tuple[date, ...], limit: int = 12) -> str:
+    """ISO dates, comma-separated, cut short with a count past `limit`."""
+    shown = ", ".join(day.isoformat() for day in days[:limit])
+    return shown if len(days) <= limit else f"{shown} (+{len(days) - limit} more)"
 
 
 @app.command()
