@@ -81,6 +81,8 @@ def expected_bars(name: str) -> pd.DataFrame:
             "low": raw["Low"].astype("float64"),
             "close": raw["Close"].astype("float64"),
             "volume": raw["Volume"].astype("float64"),
+            # Converted later, from the FX store (day 18); a fetch never knows it.
+            "close_eur": float("nan"),
         }
     )
 

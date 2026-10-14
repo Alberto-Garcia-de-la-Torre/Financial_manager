@@ -259,6 +259,7 @@ in one schema fixed before anything was downloaded:
 | `date` | `date32[day][pyarrow]` | the session's calendar date, exchange-local |
 | `open`, `high`, `low`, `close` | `float64` | raw prices, unadjusted |
 | `volume` | `float64` | |
+| `close_eur` | `float64` | the close in EUR, derived (day 18); NaN until converted |
 
 On disk it is one Parquet file per ticker, in a Hive-style partition:
 
@@ -610,6 +611,46 @@ still show disagreements between the calendar and Yahoo, for example
 Paris on 24 and 31 December 2010. Triaging them belongs to day 19's
 `finmgr check`.
 
+### One currency: `close_eur`
+
+A US stock and a Spanish one cannot be compared until both are in the same
+currency, and here that currency is EUR. `finmgr.data.fx` ingests a daily EUR
+cross from Yahoo (`EURUSD=X` and so on) into `data/fx/pair=EURUSD/part.parquet`.
+It fetches the four the roadmap names (EURUSD, EURGBP, EURCHF and EURSEK) plus
+every other listing currency in the universe: DKK, NOK, JPY, HKD, TWD, CAD and
+AUD. It then writes `close_eur = close × quote scale / rate` into every bar
+partition.
+
+```bash
+finmgr fx                     # fetch every cross, then recompute close_eur everywhere
+finmgr fx --no-fetch          # recompute close_eur from the rates already stored
+finmgr fx --compare AAPL --start 2025-01-01 --end 2025-12-31 --plot logs/aapl.png
+```
+
+Run `finmgr fx` after `finmgr ingest`. A bar the ingest adds stays NaN in
+`close_eur` until then. A session the ingest gets back unchanged keeps its EUR
+close.
+
+Three rules decide the number:
+
+- **London is quoted in pence.** Yahoo gives AZN.L at about 12,700 GBp, which
+  is £127. `QUOTE_SCALE` maps XLON to 0.01 before the division by EURGBP.
+- **Same-day rate, else the one before.** A session with no same-day rate
+  (Tokyo trades on some days Yahoo has no EURJPY row) takes the newest earlier
+  rate, at most `MAX_RATE_AGE` (5) days old. A later rate is never used.
+  Sessions after the newest stored rate stay NaN, so an evening when the rates
+  failed to arrive cannot quietly price today at yesterday's FX.
+- **EUR listings need no rate.** Their `close_eur` is their `close`.
+
+`--compare` reads the rates from the FX store separately from `close_eur` and
+checks the identity `(1 + r_EUR) = (1 + r_local) / (1 + r_FX)`. It exits
+non-zero if the gap between the two series has the wrong sign, or is off by
+more than a basis point. For AAPL over 2025, the euro rose 13.5% against the
+dollar, so a +11.5% year in USD was −1.8% in EUR. Over June 2021 to September
+2022 the euro fell 19.7%, and +11.2% in USD became +38.4% in EUR. Yahoo's
+daily FX close is a London-evening snapshot rather than each exchange's
+closing auction, so `close_eur` is correct to the day but not to the minute.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -635,7 +676,8 @@ the store holds per ticker (see "The full backfill" above). Beside it,
 `finmgr actions` ingests splits and dividends (day 15), and `finmgr adjusted`
 builds and checks the adjusted close (day 16, see "Adjusted close" above).
 `finmgr sessions` (day 17) lists the sessions missing against each venue's
-exchange calendar (see "Exchange calendars" above).
+exchange calendar (see "Exchange calendars" above). `finmgr fx` (day 18)
+ingests the EUR crosses and writes `close_eur` (see "One currency" above).
 
 `--log-level` is a global option, so it goes before the subcommand:
 

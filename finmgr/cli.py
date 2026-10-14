@@ -12,7 +12,10 @@ and dividends into `data/actions/` — `actions --show` prints them back out of
 the store — and `adjusted` (day 16) builds the back-adjusted close from both,
 with `--compare` checking it against Yahoo's. `sessions` (day 17) holds the
 store against each venue's exchange calendar and lists the sessions genuinely
-missing in a year, holidays excluded. Each stub prints
+missing in a year, holidays excluded. `fx` (day 18) ingests the EUR crosses
+into `data/fx/` and writes `close_eur` into every bar partition; `fx --compare`
+shows one ticker's local and EUR series diverging as FX says they must. Each
+stub prints
 what it will do and exits non-zero, so nothing downstream can mistake "not
 written yet" for "ran successfully".
 
@@ -39,6 +42,7 @@ from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
 from finmgr.data import adjcheck, calendars, store
 from finmgr.data import adjust as adjust_module
+from finmgr.data import fx as fx_module
 from finmgr.data import ingest as ingest_module
 from finmgr.data import manifest as manifest_module
 from finmgr.data import universe as universe_module
@@ -554,6 +558,161 @@ def _show_actions(
             actions_module.describe(row.action, row.value),
         )
     console.print(table)
+
+
+@app.command()
+def fx(
+    pair: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--pair",
+            "-p",
+            help="Only this EUR cross, e.g. EURUSD; repeatable (default: every one the "
+            "universe needs).",
+            metavar="PAIR",
+        ),
+    ] = None,
+    start: str = typer.Option(
+        None, "--start", help="First date (default: history_start from settings)."
+    ),
+    end: str = typer.Option(None, "--end", help="Last date, inclusive (default: today)."),
+    no_fetch: bool = typer.Option(
+        False, "--no-fetch", help="Download nothing: recompute close_eur from the stored rates."
+    ),
+    compare: str = typer.Option(
+        None,
+        "--compare",
+        help="Download nothing: compare one ticker's local and EUR closes over "
+        "--start..--end, from the store.",
+        metavar="SYMBOL",
+    ),
+    plot: Annotated[
+        Path | None,
+        typer.Option(
+            "--plot", help="With --compare: also draw both series to this PNG.", metavar="PATH"
+        ),
+    ] = None,
+    rows: int = typer.Option(12, "--rows", help="With --compare: sessions sampled into the table."),
+) -> None:
+    """Ingest EUR exchange rates into data/fx/ and write close_eur into the bar store.
+
+    By default every cross the universe needs (EURUSD, EURGBP, EURCHF, EURSEK
+    and the rest) is fetched for the whole window and merged on (pair, date);
+    then close_eur is recomputed for every stored ticker and the partitions
+    where it changed are rewritten. Exits non-zero if a cross failed or a
+    ticker could not be converted. Run it after `finmgr ingest`.
+
+    With --compare the store alone is read: one ticker's local and EUR series
+    over the window, and whether the gap between them is the one FX implies.
+    Exits non-zero if it is not.
+    """
+    settings = load_settings()
+    if compare:
+        _compare_currencies(settings, compare, start=start, end=end, plot=plot, rows=rows)
+        return
+
+    failed: list[str] = []
+    if not no_fetch:
+        try:
+            results = fx_module.ingest_fx(pair or None, start=start, end=end, settings=settings)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        stored = fx_module.read_fx(settings=settings)
+        table = Table(title="EUR exchange rates")
+        table.add_column("pair", style="bold")
+        table.add_column("fetched", justify="right")
+        table.add_column("new", justify="right")
+        table.add_column("stored", justify="right")
+        table.add_column("from")
+        table.add_column("to")
+        table.add_column("last rate", justify="right")
+        table.add_column("error", overflow="fold")
+        for result in results:
+            held = stored.loc[stored["pair"] == result.pair]
+            table.add_row(
+                result.pair,
+                str(result.rows),
+                str(result.added),
+                str(len(held)),
+                str(held["date"].iloc[0]) if len(held) else "-",
+                str(held["date"].iloc[-1]) if len(held) else "-",
+                f"{held['rate'].iloc[-1]:.4f}" if len(held) else "-",
+                f"[red]{result.error}[/red]" if result.error else "",
+            )
+        console.print(table)
+        failed = [result.pair for result in results if not result.ok]
+
+    conversions = fx_module.refresh_close_eur(settings=settings)
+    broken = [c for c in conversions if c.error]
+    for c in broken:
+        console.print(f"[red]{c.ticker}: {c.error}[/red]")
+    console.print(
+        f"close_eur: {len(conversions) - len(broken)} of {len(conversions)} tickers converted, "
+        f"{sum(c.converted for c in conversions)} sessions, "
+        f"{sum(c.unconverted for c in conversions)} left unconverted, "
+        f"{sum(1 for c in conversions if c.path is not None)} partitions rewritten"
+    )
+    if failed or broken:
+        log.warning(
+            "finmgr fx: rates failed for %s; not converted %s",
+            ", ".join(failed) or "-",
+            ", ".join(c.ticker for c in broken) or "-",
+        )
+        raise typer.Exit(code=1)
+
+
+def _compare_currencies(
+    settings: Settings,
+    ticker: str,
+    *,
+    start: str | None,
+    end: str | None,
+    plot: Path | None,
+    rows: int,
+) -> None:
+    """Print a ticker's local vs EUR series and say whether FX explains the gap."""
+    try:
+        summary, series = fx_module.divergence(ticker, start=start, end=end, settings=settings)
+    except ValueError as exc:
+        log.warning("finmgr fx --compare: %s", exc)
+        raise typer.Exit(code=1) from exc
+    if summary.pair is None:
+        log.warning("finmgr fx --compare: %s is listed in EUR; there is no FX to compare", ticker)
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"{ticker}: {summary.currency} against EUR")
+    table.add_column("date")
+    table.add_column("close as quoted", justify="right")
+    table.add_column("close EUR", justify="right")
+    table.add_column(summary.pair, justify="right")
+    table.add_column(f"{summary.currency} =100", justify="right")
+    table.add_column("EUR =100", justify="right")
+    picks = sorted({round(i * (len(series) - 1) / max(rows - 1, 1)) for i in range(max(rows, 2))})
+    for row in series.iloc[picks].itertuples(index=False):
+        table.add_row(
+            row.date.isoformat(),
+            f"{row.close:,.2f}",
+            f"{row.close_eur:,.2f}",
+            f"{row.rate:.4f}",
+            f"{row.local_index:.1f}",
+            f"{row.eur_index:.1f}",
+        )
+    console.print(table)
+
+    euro = "strengthened" if summary.fx_return > 0 else "weakened"
+    console.print(
+        f"{summary.start} to {summary.end}: {ticker} {summary.local_return:+.2%} in "
+        f"{summary.currency}, {summary.eur_return:+.2%} in EUR. {summary.pair} "
+        f"{summary.fx_return:+.2%} (the euro {euro}), so the EUR series should "
+        f"{'lag' if summary.fx_return > 0 else 'lead'} by {abs(summary.expected_gap):.2%}; "
+        f"it {'lags' if summary.gap < 0 else 'leads'} by {abs(summary.gap):.2%}."
+    )
+    if plot is not None:
+        console.print(f"wrote {fx_module.plot_divergence(summary, series, plot)}")
+    if not summary.consistent:
+        log.warning("finmgr fx --compare: %s's EUR series does not move with FX", ticker)
+        raise typer.Exit(code=1)
+    console.print("[green]consistent: the EUR series diverges in the direction FX moved[/green]")
 
 
 @app.command()

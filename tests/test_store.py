@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -25,6 +26,7 @@ from finmgr.data.store import (
     bars_root,
     conform_bars,
     empty_bars,
+    merge_bars,
     partition_path,
     read_bars,
     stored_tickers,
@@ -67,6 +69,8 @@ def synthetic_bars(
                     "low": low,
                     "close": close,
                     "volume": rng.integers(1e5, 1e7, sessions).astype("float64"),
+                    # Any positive rate will do; the store does not compute it.
+                    "close_eur": close / 1.08,
                 }
             )
         )
@@ -290,9 +294,52 @@ def test_conform_rejects_a_missing_column() -> None:
 
 
 def test_conform_rejects_an_unexpected_column() -> None:
-    """Day 18 adds `close_eur` by widening the schema here, not by sneaking it in."""
-    with pytest.raises(ValueError, match=r"unexpected \['close_eur'\]"):
-        conform_bars(synthetic_bars(sessions=2).assign(close_eur=1.0))
+    """Day 18 added `close_eur` by widening the schema; anything else is refused."""
+    with pytest.raises(ValueError, match=r"unexpected \['adj_close'\]"):
+        conform_bars(synthetic_bars(sessions=2).assign(adj_close=1.0))
+
+
+def test_conform_fills_a_missing_derived_column_with_nan() -> None:
+    """Yahoo never sends `close_eur`; leaving it out means "not converted yet"."""
+    frame = synthetic_bars(sessions=3)
+    conformed = conform_bars(frame.drop(columns=["close_eur"]))
+
+    assert list(conformed.columns) == list(BAR_COLUMNS)
+    assert conformed["close_eur"].dtype == "float64"
+    assert conformed["close_eur"].isna().all()
+
+
+def test_read_accepts_a_partition_written_before_close_eur(root: Path) -> None:
+    """A pre-day-18 file has no close_eur; it reads beside a newer one, as NaN."""
+    old = synthetic_bars(tickers=("OLD",), sessions=3)
+    new = synthetic_bars(tickers=("NEW",), sessions=3)
+    write_bars(new, root=root)
+    legacy = partition_path("OLD", root=root)
+    legacy.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pandas(old.drop(columns=["close_eur"]), preserve_index=False), legacy
+    )
+
+    restored = read_bars(root=root)
+
+    assert restored.loc[restored["ticker"] == "OLD", "close_eur"].isna().all()
+    assert restored.loc[restored["ticker"] == "NEW", "close_eur"].notna().all()
+    assert read_bars("OLD", root=root)["close_eur"].isna().all()
+
+
+def test_merge_keeps_the_eur_close_of_a_session_yahoo_sent_back_unchanged(root: Path) -> None:
+    stored = synthetic_bars(tickers=("AAPL",), sessions=4)
+    write_bars(stored, root=root)
+    refetched = synthetic_bars(tickers=("AAPL",), sessions=5).drop(columns=["close_eur"])
+    refetched.loc[2, "close"] += 1.0  # a revised session
+
+    merge_bars(refetched, root=root)
+    after = read_bars("AAPL", root=root)
+
+    assert (
+        after["close_eur"].iloc[[0, 1, 3]].tolist() == stored["close_eur"].iloc[[0, 1, 3]].tolist()
+    )
+    assert after["close_eur"].iloc[[2, 4]].isna().all()
 
 
 def test_conform_rejects_a_repeated_ticker_and_date() -> None:

@@ -10,6 +10,7 @@ one fixed schema:
     low     float64
     close   float64
     volume  float64
+    close_eur float64             the close in EUR (day 18); NaN until converted
 
 The layout is one Parquet file per ticker, in a Hive-style partition:
 
@@ -45,6 +46,15 @@ which is what day 12's ingest asks Yahoo *from*; :func:`merge_bars` folds a new
 frame into a stored partition, keyed on `(ticker, date)`, so a session that is
 already on disk is overwritten rather than appended and an unchanged partition
 is not rewritten at all.
+
+`close_eur` is the one *derived* column. Everything else is Yahoo's answer;
+this one is the close divided by the session's EUR exchange rate, written by
+:func:`finmgr.data.fx.refresh_close_eur` once the rates are on disk. A frame
+handed to the store may leave it out — :func:`conform_bars` fills it with NaN,
+which means "not converted yet", never "worth nothing" — and a merge does not
+count it when deciding whether a session changed: Yahoo cannot revise a column
+it never sent. A session the merge receives back with the same close keeps the
+EUR close already stored for it.
 """
 
 from __future__ import annotations
@@ -64,12 +74,27 @@ from finmgr import runlog
 from finmgr.config import Settings, load_settings
 
 #: The columns of a bar frame, in order.
-BAR_COLUMNS: tuple[str, ...] = ("ticker", "date", "open", "high", "low", "close", "volume")
+BAR_COLUMNS: tuple[str, ...] = (
+    "ticker",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_eur",
+)
+
+#: Columns the store computes rather than receives. Optional on input, and
+#: never compared when a merge asks whether Yahoo revised a session.
+DERIVED_COLUMNS: tuple[str, ...] = ("close_eur",)
 
 #: What `(ticker, date)` identifies — a session — and what is compared when
 #: deciding whether a bar already on disk has actually changed.
 KEY_COLUMNS: tuple[str, ...] = ("ticker", "date")
-VALUE_COLUMNS: tuple[str, ...] = tuple(c for c in BAR_COLUMNS if c not in KEY_COLUMNS)
+VALUE_COLUMNS: tuple[str, ...] = tuple(
+    c for c in BAR_COLUMNS if c not in KEY_COLUMNS and c not in DERIVED_COLUMNS
+)
 
 #: The pandas dtype of every column. This is the contract `read_bars()` and
 #: `write_bars()` both honour, and what "dtypes identical" means downstream.
@@ -81,6 +106,7 @@ BAR_DTYPES: dict[str, str] = {
     "low": "float64",
     "close": "float64",
     "volume": "float64",
+    "close_eur": "float64",
 }
 
 #: The physical Parquet schema, stated rather than inferred. Handing this to
@@ -96,6 +122,7 @@ BAR_ARROW_SCHEMA = pa.schema(
         pa.field("low", pa.float64()),
         pa.field("close", pa.float64()),
         pa.field("volume", pa.float64()),
+        pa.field("close_eur", pa.float64()),
     ]
 )
 
@@ -226,7 +253,9 @@ def conform_bars(frame: pd.DataFrame) -> pd.DataFrame:
         raise TypeError(f"expected a DataFrame, got {type(frame).__name__}")
 
     present = list(frame.columns)
-    missing = [column for column in BAR_COLUMNS if column not in present]
+    missing = [
+        column for column in BAR_COLUMNS if column not in present and column not in DERIVED_COLUMNS
+    ]
     unexpected = [column for column in present if column not in BAR_COLUMNS]
     if missing or unexpected:
         detail = []
@@ -245,6 +274,10 @@ def conform_bars(frame: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame(index=pd.RangeIndex(len(frame)))
     for column in BAR_COLUMNS:
+        if column not in present:
+            # A derived column the caller did not compute: not yet known.
+            out[column] = pd.Series(float("nan"), index=out.index, dtype=BAR_DTYPES[column])
+            continue
         values = frame[column].reset_index(drop=True)
         if column == "date":
             out[column] = _conform_dates(values)
@@ -382,13 +415,17 @@ def read_bars(
     if first is not None and last is not None and first > last:
         raise ValueError(f"start {first} is after end {last}")
 
-    columns = ", ".join(f'"{column}"' for column in BAR_COLUMNS)
     # hive_partitioning reads `ticker` back out of the directory name. The
     # column is stored inside the file too — a partition is readable on its own
     # that way — and DuckDB prefers the file's copy when both exist.
+    #
+    # `SELECT *` with union_by_name rather than a column list: a partition
+    # written before day 18 has no close_eur, and naming the column would make
+    # the read fail until every file had been rewritten. Read this way its
+    # rows simply arrive without one, and conform_bars fills it with NaN.
     sql = [
-        f"SELECT {columns}",
-        "FROM read_parquet(?, hive_partitioning = true)",
+        "SELECT *",
+        "FROM read_parquet(?, hive_partitioning = true, union_by_name = true)",
     ]
     params: list[Any] = [[str(path) for path in files]]
     where: list[str] = []
@@ -599,6 +636,17 @@ def _merge_one(
     # it overlaps instead of appending a second copy. conform_bars inside
     # write_bars re-checks that, and would refuse the frame if a duplicate
     # survived.
+    if not shared.empty:
+        # A session Yahoo sent back with the same close keeps the EUR close
+        # already computed for it, so a merge does not undo a conversion. A
+        # revised close loses it: the old conversion was of a different price.
+        stored = existing.set_index("date")
+        same_close = incoming["date"].map(stored["close"]) == incoming["close"]
+        carry = incoming["close_eur"].isna() & same_close
+        incoming = incoming.assign(
+            close_eur=incoming["close_eur"].mask(carry, incoming["date"].map(stored["close_eur"]))
+        )
+
     kept = existing.loc[~existing["date"].isin(incoming["date"])]
     combined = pd.concat([kept, incoming], ignore_index=True)
     (path,) = write_bars(combined, settings=settings, root=root)
