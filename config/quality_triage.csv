@@ -1,0 +1,144 @@
+# Triage register for `finmgr check` (day 19). One rule per finding.
+#
+#   check    one of the checks in finmgr/data/quality.py
+#   scope    a ticker, or a venue MIC to cover every listing on that venue
+#   start    first flag date the rule covers (inclusive)
+#   end      last flag date the rule covers (inclusive)
+#   verdict  genuine     the row is right; the flag is a false alarm
+#            bad-data    the row is wrong; day 20 quarantines it
+#            source-gap  no bar, and nothing local to fix
+#   reason   what was checked. A rule with no evidence behind it is a hole.
+#
+# Closures confirmed against the venue go in calendars.UNSCHEDULED_CLOSURES,
+# not here: they are not missing data at all.
+#
+# Do not widen a rule's dates to absorb a new flag. Look at the new flag and
+# add a rule of its own.
+check,scope,start,end,verdict,reason
+
+# --- errors -----------------------------------------------------------------
+high_below_low,0700.HK,2010-01-15,2010-01-15,bad-data,"high 31.90 < low 32.38, open above the high: an impossible bar"
+unexplained_move,NFLX,2013-01-24,2013-01-24,genuine,"Q4 2012 results beat (subscriber growth, return to profit): +42% on 1.19bn shares (split-adjusted), the real move"
+unexplained_move,NOVO-B.CO,2010-05-14,2010-05-14,bad-data,"Copenhagen closed (day after Ascension); volume-0 bar at double the price around it (94.28 vs 47.19 / 47.50)"
+unexplained_move,NOVO-B.CO,2010-05-17,2010-05-17,genuine,"row is right (47.50, +0.7% on 2010-05-12); the -49.6% is measured from the bad 2010-05-14 bar"
+
+# --- close outside the day's range ------------------------------------------
+# EQNR.OL: each falls on the last session before an ex-dividend date, and the
+# close sits under the low by roughly the dividend. Yahoo has already
+# subtracted the payout from the cum-dividend close, which fakes a drop the day
+# before the ex-date.
+close_out_of_range,EQNR.OL,2021-11-10,2021-11-10,bad-data,"cum-dividend close already ex-dividend (ex 2021-11-11, NOK 1.73)"
+close_out_of_range,EQNR.OL,2022-08-10,2022-08-10,bad-data,"cum-dividend close already ex-dividend (ex 2022-08-11, NOK 3.86; close 3.30 under the low)"
+close_out_of_range,EQNR.OL,2022-11-10,2022-11-10,bad-data,"cum-dividend close already ex-dividend (ex 2022-11-11, NOK 7.07; close 2.10 under the low)"
+close_out_of_range,EQNR.OL,2023-05-10,2023-05-10,bad-data,"cum-dividend close already ex-dividend (ex 2023-05-11, NOK 8.65; close 9.00 under the low)"
+close_out_of_range,EQNR.OL,2023-11-13,2023-11-13,bad-data,"cum-dividend close already ex-dividend (ex 2023-11-14, NOK 9.85; close 3.35 under the low)"
+close_out_of_range,EQNR.OL,2024-02-13,2024-02-13,bad-data,"cum-dividend close already ex-dividend (ex 2024-02-14, NOK 9.47; close 8.85 under the low)"
+close_out_of_range,EQNR.OL,2024-05-14,2024-05-14,bad-data,"cum-dividend close already ex-dividend (ex 2024-05-15, NOK 7.51; close 6.55 under the low)"
+# London, 2024-05-01: every XLON listing has a truncated bar that day (high ==
+# low, open outside it, volume a tenth of normal). HSBA.L's close happens to
+# land inside its range, so it is not flagged.
+close_out_of_range,XLON,2024-05-01,2024-05-01,bad-data,"truncated Yahoo bar: high == low, open outside it, volume ~10% of normal"
+# The rest are small breaches (<= 1.7%) whose close is continuous with the
+# sessions around it. That is the pattern of a closing-auction print falling
+# outside Yahoo's continuous-session high/low. The close is right; the
+# high/low on these rows is not to be trusted.
+close_out_of_range,8306.T,2022-05-17,2022-05-17,genuine,"close one tick (0.1 JPY) under the low; close continuous with neighbours"
+close_out_of_range,ASML.AS,2011-09-06,2011-09-13,genuine,"closing-auction close above Yahoo's high (+1.68%, +0.10%, +0.25%); next opens 31.18, 33.35, 32.99 agree"
+close_out_of_range,AZN.L,2011-11-21,2011-11-21,genuine,"close 0.51% under the low; next open 2821 agrees with the range not the close, but the close is in line with 2011-11-18/22"
+close_out_of_range,INGA.AS,2011-08-31,2011-08-31,genuine,"closing-auction close 0.84% above Yahoo's high; next open 6.07"
+close_out_of_range,ISP.MI,2010-09-13,2010-09-13,genuine,"close 0.61% under the low; continuous with neighbours"
+close_out_of_range,MBG.DE,2012-06-13,2012-06-13,genuine,"closing-auction close 1.74% under Yahoo's low; next open 28.28 is lower still"
+close_out_of_range,NESN.SW,2017-08-17,2018-06-12,genuine,"SIX closing auction outside Yahoo's continuous high/low (+0.06%, -0.11%)"
+close_out_of_range,NOVN.SW,2016-11-04,2017-08-17,genuine,"SIX closing auction outside Yahoo's continuous high/low (+0.73%, +0.43%)"
+close_out_of_range,UBSG.SW,2016-11-04,2017-08-17,genuine,"SIX closing auction outside Yahoo's continuous high/low (+0.53%, +0.25%, +0.79%)"
+close_out_of_range,OR.PA,2011-09-12,2011-09-12,genuine,"closing-auction close 0.44% above Yahoo's high; next open 72.45"
+close_out_of_range,RMS.PA,2011-08-31,2011-09-06,genuine,"thin August-September 2011 book (50-110k shares); closes 270.15, 270.00, 267.40 continuous with each other"
+
+# --- missing sessions -------------------------------------------------------
+# Researched 2026-10-15 against venue calendars and news. OPEN means the venue
+# traded and Yahoo has no bar. UNCONFIRMED means no closure was found but
+# no proof the venue was open either.
+missing_session,XPAR,2010-12-24,2010-12-24,source-gap,"OPEN: Euronext half-day session (closes 14:05 CET); Yahoo has no bar"
+missing_session,XPAR,2010-12-31,2010-12-31,source-gap,"OPEN: Euronext half-day session; Yahoo has no bar"
+missing_session,XAMS,2010-12-31,2010-12-31,source-gap,"OPEN: Euronext half-day session; Yahoo has no bar"
+missing_session,XPAR,2012-12-24,2012-12-24,source-gap,"OPEN: shortened session, CAC 40 closed -0.24% at 3652.61 (BFM Bourse); Yahoo has no bar"
+missing_session,XPAR,2012-12-31,2012-12-31,source-gap,"OPEN: Euronext half-day session; Yahoo has no bar"
+missing_session,XPAR,2015-12-31,2015-12-31,source-gap,"OPEN: Paris closed early at 14:00 (BFM Bourse); Yahoo has no bar"
+missing_session,XAMS,2015-12-31,2015-12-31,source-gap,"OPEN: Euronext half-day session; Yahoo has no bar"
+missing_session,XETR,2011-10-03,2011-10-03,source-gap,"OPEN: Deutsche Boerse trading calendar 2011 lists German Unity Day as a trading day; Yahoo has no bar"
+missing_session,XETR,2012-10-03,2012-10-03,source-gap,"OPEN: Deutsche Boerse trading calendar 2012 lists German Unity Day as a trading day; Yahoo has no bar"
+missing_session,XETR,2013-10-03,2013-10-03,source-gap,"OPEN: Deutsche Boerse trading calendar 2013 lists German Unity Day as a trading day; Yahoo has no bar"
+missing_session,XLON,2012-05-28,2012-05-28,source-gap,"OPEN: spring bank holiday moved to 4 June for the Diamond Jubilee; Yahoo has no bar"
+missing_session,HSBA.L,2026-04-13,2026-04-13,source-gap,"OPEN: AZN.L, SHEL.L, ULVR.L all traded (2.0m-7.5m shares); Yahoo has no HSBA.L bar"
+missing_session,XTKS,2010-07-20,2010-07-20,source-gap,"OPEN: ordinary Tuesday after Marine Day; Yahoo has no bar for any Tokyo listing"
+missing_session,XTKS,2010-09-15,2010-09-15,source-gap,"OPEN: BoJ intervention day, Nikkei +2.34% to 9516.56; Yahoo has no bar"
+missing_session,XTAI,2019-09-09,2019-09-09,source-gap,"OPEN: listed in TWSE daily market statistics (FMTQIK); Yahoo has no bar"
+missing_session,XTAI,2021-04-06,2021-04-06,source-gap,"OPEN: listed in TWSE daily market statistics (FMTQIK); Yahoo has no bar"
+missing_session,XTAI,2025-08-01,2025-08-01,source-gap,"OPEN: listed in TWSE daily market statistics (FMTQIK); Yahoo has no bar"
+missing_session,XASX,2011-03-14,2011-03-14,source-gap,"OPEN (inferred): Victorian Labour Day is a state holiday, ASX closes only on national ones; Yahoo has no bar"
+missing_session,XASX,2011-08-01,2011-08-01,source-gap,"OPEN (inferred): NSW Bank Holiday is not an ASX holiday; Yahoo has no bar"
+missing_session,XASX,2011-10-03,2011-10-03,source-gap,"OPEN (inferred): NSW Labour Day is not an ASX holiday; Yahoo has no bar"
+missing_session,XASX,2011-11-01,2011-11-01,source-gap,"OPEN (inferred): Melbourne Cup is not an ASX holiday; Yahoo has no bar"
+missing_session,XMAD,2018-09-20,2018-09-20,source-gap,"UNCONFIRMED: ordinary Thursday mid Ibex winning streak, no BME closure or outage found; Yahoo has no bar for any Madrid listing"
+missing_session,XHKG,2012-03-19,2012-03-19,source-gap,"UNCONFIRMED: ordinary Monday, no HKEX closure or outage found; Yahoo has no bar"
+missing_session,XSTO,2013-05-10,2013-05-10,source-gap,"UNCONFIRMED: day after Ascension, Stockholm is normally open; Yahoo has no bar"
+missing_session,XSTO,2019-06-10,2019-06-10,source-gap,"UNCONFIRMED: Whit Monday, not a Swedish holiday since 2005; Yahoo has no bar"
+missing_session,XSTO,2019-06-17,2019-06-17,source-gap,"UNCONFIRMED: ordinary Monday, no closure found; Yahoo has no bar"
+missing_session,XSTO,2019-08-05,2019-08-05,source-gap,"UNCONFIRMED: ordinary Monday, no closure found; Yahoo has no bar"
+missing_session,XCSE,2010-04-21,2010-04-21,source-gap,"UNCONFIRMED: ordinary Wednesday, not a Danish holiday, no outage found; Yahoo has no bar"
+missing_session,XCSE,2014-06-30,2014-06-30,source-gap,"UNCONFIRMED: ordinary Monday, not a Danish holiday, no outage found; Yahoo has no bar"
+missing_session,XCSE,2026-03-23,2026-03-23,source-gap,"UNCONFIRMED: ordinary Monday, not a Danish holiday, no outage found; Yahoo has no bar"
+
+# --- bars on days the venue was closed --------------------------------------
+# Every one checked: volume 0 and open=high=low=close=the previous close.
+off_calendar,NOVO-B.CO,2010-05-14,2010-05-14,bad-data,"Copenhagen closed (day after Ascension); volume-0 bar at double the surrounding price"
+off_calendar,XASX,2015-12-28,2015-12-28,bad-data,XASX closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XETR,2015-12-25,2015-12-25,bad-data,XETR closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XETR,2017-06-05,2017-06-05,bad-data,XETR closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XETR,2017-10-03,2017-10-03,bad-data,XETR closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XETR,2017-10-31,2017-10-31,bad-data,XETR closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XETR,2018-05-21,2018-05-21,bad-data,XETR closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XHKG,2013-08-14,2013-08-14,bad-data,XHKG closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XHKG,2016-08-02,2016-08-02,bad-data,XHKG closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XHKG,2016-10-21,2016-10-21,bad-data,XHKG closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XHKG,2017-08-23,2017-08-23,bad-data,XHKG closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XLON,2011-04-29,2011-04-29,bad-data,XLON closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XMAD,2019-12-25,2019-12-25,bad-data,XMAD closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XMIL,2015-12-31,2015-12-31,bad-data,XMIL closed (Thu); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XOSL,2017-04-13,2017-04-13,bad-data,XOSL closed (Thu); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XPAR,2014-05-01,2014-05-01,bad-data,XPAR closed (Thu); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XPAR,2019-12-25,2019-12-25,bad-data,XPAR closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XSTO,2013-06-21,2013-06-21,bad-data,XSTO closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XSTO,2017-06-06,2017-06-06,bad-data,XSTO closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XSTO,2017-06-23,2017-06-23,bad-data,XSTO closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XSTO,2018-06-06,2018-06-06,bad-data,XSTO closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XSTO,2018-06-22,2018-06-22,bad-data,XSTO closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2012-08-02,2012-08-02,bad-data,XTAI closed (Thu); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2014-07-23,2014-07-23,bad-data,XTAI closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2015-07-10,2015-07-10,bad-data,XTAI closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2015-09-29,2015-09-29,bad-data,XTAI closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2016-07-08,2016-07-08,bad-data,XTAI closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2016-09-27,2016-09-27,bad-data,XTAI closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTAI,2016-09-28,2016-09-28,bad-data,XTAI closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2017-07-17,2017-07-17,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2017-08-11,2017-08-11,bad-data,XTKS closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2017-09-18,2017-09-18,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2017-10-09,2017-10-09,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2017-11-03,2017-11-03,bad-data,XTKS closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2017-11-23,2017-11-23,bad-data,XTKS closed (Thu); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-01-01,2018-01-01,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-01-02,2018-01-02,bad-data,XTKS closed (Tue); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-01-03,2018-01-03,bad-data,XTKS closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-01-08,2018-01-08,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-02-12,2018-02-12,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-03-21,2018-03-21,bad-data,XTKS closed (Wed); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-04-30,2018-04-30,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-05-03,2018-05-03,bad-data,XTKS closed (Thu); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-05-04,2018-05-04,bad-data,XTKS closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-07-16,2018-07-16,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-09-17,2018-09-17,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-09-24,2018-09-24,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-10-08,2018-10-08,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-11-23,2018-11-23,bad-data,XTKS closed (Fri); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-12-24,2018-12-24,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close
+off_calendar,XTKS,2018-12-31,2018-12-31,bad-data,XTKS closed (Mon); Yahoo placeholder bar: volume 0 and open=high=low=close=previous close

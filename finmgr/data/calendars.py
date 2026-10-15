@@ -53,7 +53,16 @@ from finmgr.data.universe import load_universe
 #: reason a person can check.
 UNSCHEDULED_CLOSURES: dict[str, dict[date, str]] = {
     "XTAI": {
+        # Day 19: the three below are absent from TWSE's own daily market
+        # statistics (twse.com.tw exchangeReport/FMTQIK for that month).
+        date(2011, 5, 2): "Labour Day (Sun 1 May) observed: TWSE closed",
+        date(2022, 2, 4): "Lunar New Year: TWSE closed 27 Jan - 6 Feb",
+        date(2023, 1, 18): "pre-Lunar New Year settlement-only day: no TWSE trading",
         date(2024, 10, 31): "typhoon Kong-rey: TWSE closed by typhoon-day order",
+    },
+    "XHKG": {
+        date(2023, 9, 1): "typhoon Saola: signal no. 8 past noon, HKEX cancelled all sessions",
+        date(2023, 9, 8): "black rainstorm warning all day: HKEX did not open",
     },
 }
 

@@ -606,10 +606,70 @@ it existed. Bars dated on a day the venue was closed are listed as
 Closures announced at short notice, which the library does not carry, go in
 `UNSCHEDULED_CLOSURES` with a reason. One example is the typhoon that shut
 Taipei on 2024-10-31. These closures are shown as excused rather than dropped.
-With that one exclusion, all 100 tickers are complete for 2024. Older years
-still show disagreements between the calendar and Yahoo, for example
-Paris on 24 and 31 December 2010. Triaging them belongs to day 19's
-`finmgr check`.
+With that one exclusion, all 100 tickers are complete for 2024. Day 19 added
+five more closures there, each confirmed against the venue: three days on
+which TWSE did not trade, and Hong Kong's two weather closures of September
+2023. The remaining disagreements in older years are triaged by `finmgr check`
+(below).
+
+### Data quality checks
+
+`finmgr check` runs eight checks over every stored bar and prints a
+severity-tagged table:
+
+| check | severity | flags |
+|---|---|---|
+| `bad_price` | error | open, high, low or close is NaN, zero or negative |
+| `high_below_low` | error | the day's high is under its low |
+| `duplicate_date` | error | the same session is stored twice |
+| `unexplained_move` | error | close-to-close move over 40% with no split on the day to explain it |
+| `close_out_of_range` | warning | close above the high or below the low |
+| `flat_price` | warning | close unchanged five sessions running |
+| `missing_session` | warning | the venue was open and the store has no bar (every year, via `calendars.session_gaps`) |
+| `off_calendar` | warning | a bar on a day the venue was closed |
+
+```bash
+finmgr check                  # untriaged flags in full, triaged ones counted
+finmgr check --all            # every flag with its triage verdict and reason
+finmgr check -t EQNR.OL --all # one ticker
+```
+
+A flag is not a verdict. Each finding is looked at, and the decision is written
+to `config/quality_triage.csv`. A rule there names a check, a ticker or a whole
+venue (MIC), and a date range. Its verdict is one of three:
+
+- `genuine`: the row is right.
+- `bad-data`: the row is wrong. Day 20 quarantines it.
+- `source-gap`: Yahoo has no bar, and there is nothing local to fix.
+
+Triaged flags are still reported but no longer fail the run. The command exits
+non-zero while any flag is untriaged, so a new bad print fails the evening it
+arrives. A rule that matches nothing is logged, so the register does not go
+stale.
+
+The first run over all 100 tickers raised 359 flags. Seven of them were real
+closures and went into `UNSCHEDULED_CLOSURES`. The other 352 are triaged:
+
+- **182 off-calendar bars, `bad-data`.** Yahoo serves placeholder bars on days
+  the venue was shut: volume 0, with every price equal to the previous close.
+  Examples are Tokyo through most of 2017–18, Xetra on 2017-10-03, and Paris
+  and Madrid on Christmas Day 2019. One is worse: NOVO-B.CO on 2010-05-14 is
+  stored at double the price either side of it.
+- **10 range breaches, `bad-data`.** Seven EQNR.OL closes sit under the day's
+  low on the session before an ex-dividend date, short by about the dividend.
+  Yahoo removes the payout one day early, which shows up as a fake drop. The
+  other three are truncated London bars on 2024-05-01.
+- **1 impossible bar, `bad-data`.** 0700.HK on 2010-01-15 has a high below
+  its low.
+- **19 range breaches, `genuine`.** Small breaches (up to 1.7%) on venues with
+  a closing auction. Each close is consistent with the sessions around it.
+- **2 big moves, `genuine`.** NFLX rose 42% on its Q4 2012 results. NOVO-B.CO's
+  -49.6% on 2010-05-17 is measured from the bad bar the session before.
+- **137 missing sessions, `source-gap`.** Each date was researched against the
+  venue: Euronext's half days, Xetra on German Unity Day 2011–13, London on
+  2012-05-28 and others. The register says which dates were confirmed open and
+  which were left `UNCONFIRMED`, meaning no closure was found but there is no
+  proof the venue traded either.
 
 ### One currency: `close_eur`
 
@@ -660,7 +720,7 @@ subcommands are the daily pipeline, in the order they run:
 finmgr --help
 
   ingest     Download daily bars for the universe into the data store.
-  check      Run data quality checks over the stored bars.
+  check      Run the data quality checks over the stored bars, severity-tagged.
   features   Build the feature panel from the stored bars.
   train      Train a model walk-forward on the feature panel.
   rank       Score and rank the universe as of a given date.
@@ -668,7 +728,8 @@ finmgr --help
 ```
 
 `ingest` is real from day 11 — see "Ingesting the universe" above, and
-`finmgr ingest --help` for its options. The other five are stubs: each prints
+`finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
+quality checks" above). The other four are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what

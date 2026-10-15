@@ -6,7 +6,7 @@ Six subcommands make up the daily pipeline, in the order they run:
 
 `ingest` is real from day 11, and from day 14 records every run in
 `data/meta/ingest_runs.parquet` — `ingest --report` reads the last one back.
-The other five are still stubs. Beside the pipeline, `coverage` (day 13)
+`features`, `train`, `rank` and `report` are still stubs. Beside the pipeline, `coverage` (day 13)
 reports what the store holds per ticker, and `actions` (day 15) ingests splits
 and dividends into `data/actions/` — `actions --show` prints them back out of
 the store — and `adjusted` (day 16) builds the back-adjusted close from both,
@@ -14,10 +14,11 @@ with `--compare` checking it against Yahoo's. `sessions` (day 17) holds the
 store against each venue's exchange calendar and lists the sessions genuinely
 missing in a year, holidays excluded. `fx` (day 18) ingests the EUR crosses
 into `data/fx/` and writes `close_eur` into every bar partition; `fx --compare`
-shows one ticker's local and EUR series diverging as FX says they must. Each
-stub prints
-what it will do and exits non-zero, so nothing downstream can mistake "not
-written yet" for "ran successfully".
+shows one ticker's local and EUR series diverging as FX says they must.
+`check` (day 19) runs the data quality checks and fails on any flag not yet
+triaged in `config/quality_triage.csv`. Each stub prints what it will do and
+exits non-zero, so nothing downstream can mistake "not written yet" for "ran
+successfully".
 
 Every invocation is bracketed by a RUN START / RUN END pair in
 `logs/finmgr.log`, both carrying the run id minted in `finmgr.runlog`. The
@@ -40,7 +41,7 @@ from rich.table import Table
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
-from finmgr.data import adjcheck, calendars, store
+from finmgr.data import adjcheck, calendars, quality, store
 from finmgr.data import adjust as adjust_module
 from finmgr.data import fx as fx_module
 from finmgr.data import ingest as ingest_module
@@ -60,7 +61,6 @@ log = runlog.get_logger(__name__)
 # Which roadmap day turns each stub into a real command. Printed with the
 # stub message so it is obvious that nothing is missing by accident.
 _PLANNED = {
-    "check": "day 19",
     "features": "day 31",
     "train": "day 42",
     "rank": "day 49",
@@ -716,9 +716,99 @@ def _compare_currencies(
 
 
 @app.command()
-def check() -> None:
-    """Run data quality checks over the stored bars."""
-    _not_implemented("check")
+def check(
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Only this universe symbol; repeatable.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    show_all: bool = typer.Option(
+        False, "--all", "-a", help="List triaged flags one by one, not just their counts."
+    ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Last session the calendar checks expect (default: yesterday)."
+    ),
+) -> None:
+    """Run the data quality checks over the stored bars, severity-tagged.
+
+    Flags bad prices, high below low, closes outside the day's range,
+    duplicate sessions, unexplained moves over 40%, a close stuck five
+    sessions running, and gaps against the exchange calendar. Flags matched by
+    `config/quality_triage.csv` are triaged and summarised; the rest are listed.
+    Reads the store only. Exits non-zero while any flag is untriaged.
+    """
+    settings = load_settings()
+    try:
+        last = store.as_date(as_of, "--as-of")
+        result = quality.run_checks(ticker or None, as_of=last, settings=settings)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    shown = result.flags if show_all else tuple(result.untriaged)
+    if shown:
+        table = Table(title="Data quality flags" + ("" if show_all else ", untriaged"))
+        table.add_column("severity")
+        table.add_column("check")
+        table.add_column("ticker", style="bold")
+        table.add_column("date")
+        table.add_column("detail", overflow="fold")
+        table.add_column("triage", overflow="fold")
+        for flag in shown:
+            colour = "red" if flag.severity is quality.Severity.ERROR else "yellow"
+            triage = f"{flag.triage.verdict}: {flag.triage.reason}" if flag.triage else "-"
+            table.add_row(
+                f"[{colour}]{flag.severity}[/{colour}]",
+                flag.check,
+                flag.ticker,
+                flag.date.isoformat(),
+                flag.detail,
+                triage,
+            )
+        console.print(table)
+
+    triaged = [flag for flag in result.flags if flag.triaged]
+    if triaged and not show_all:
+        summary = Table(title="Triaged flags (--all lists them)")
+        summary.add_column("severity")
+        summary.add_column("check")
+        summary.add_column("verdict")
+        summary.add_column("flags", justify="right")
+        summary.add_column("tickers", justify="right")
+        groups: dict[tuple[str, str, str], list[quality.Flag]] = {}
+        for flag in triaged:
+            groups.setdefault((flag.severity, flag.check, flag.triage.verdict), []).append(flag)
+        for (severity, name, verdict), flags in groups.items():
+            summary.add_row(
+                severity, name, verdict, str(len(flags)), str(len({f.ticker for f in flags}))
+            )
+        console.print(summary)
+
+    for rule in result.unused_rules:
+        log.warning(
+            "finmgr check: triage rule matched nothing: %s %s %s..%s",
+            rule.check,
+            rule.scope,
+            rule.start,
+            rule.end,
+        )
+
+    untriaged = result.untriaged
+    errors = sum(flag.severity is quality.Severity.ERROR for flag in untriaged)
+    console.print(
+        f"{len(result.tickers)} tickers checked; {len(result.flags)} flags, "
+        f"{len(triaged)} triaged, {len(untriaged)} untriaged "
+        f"({errors} errors, {len(untriaged) - errors} warnings)"
+    )
+    if untriaged:
+        log.warning(
+            "finmgr check: untriaged flags for %s",
+            ", ".join(sorted({flag.ticker for flag in untriaged})),
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command()
