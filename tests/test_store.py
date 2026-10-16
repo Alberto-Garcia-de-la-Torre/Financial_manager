@@ -71,6 +71,8 @@ def synthetic_bars(
                     "volume": rng.integers(1e5, 1e7, sessions).astype("float64"),
                     # Any positive rate will do; the store does not compute it.
                     "close_eur": close / 1.08,
+                    # Set only by the quarantine (day 20); a fresh bar is trusted.
+                    "quarantined": False,
                 }
             )
         )

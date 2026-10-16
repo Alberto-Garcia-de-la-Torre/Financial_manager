@@ -11,6 +11,7 @@ one fixed schema:
     close   float64
     volume  float64
     close_eur float64             the close in EUR (day 18); NaN until converted
+    quarantined bool              set by day 20's quarantine; hidden from reads
 
 The layout is one Parquet file per ticker, in a Hive-style partition:
 
@@ -55,6 +56,17 @@ which means "not converted yet", never "worth nothing" — and a merge does not
 count it when deciding whether a session changed: Yahoo cannot revise a column
 it never sent. A session the merge receives back with the same close keeps the
 EUR close already stored for it.
+
+`quarantined` is the other derived column, and the one that changes what a
+read returns. :func:`finmgr.data.quarantine.apply_quarantine` sets it on every
+row the triage register calls `bad-data`, and :func:`read_bars` leaves those
+rows out unless asked for them with `include_quarantined=True`. The row is
+never removed from its partition: a bad print that disappears cannot be
+looked at again, and the next person to wonder why a return series has a hole
+in it deserves to find the bar, the flag and the reason — the last of which is
+in `data/quarantine/`. Anything that reads a partition in order to *rewrite*
+it — a merge, the EUR conversion — must read with `include_quarantined=True`,
+or the rewrite would be the silent delete this column exists to prevent.
 """
 
 from __future__ import annotations
@@ -83,11 +95,16 @@ BAR_COLUMNS: tuple[str, ...] = (
     "close",
     "volume",
     "close_eur",
+    "quarantined",
 )
 
 #: Columns the store computes rather than receives. Optional on input, and
 #: never compared when a merge asks whether Yahoo revised a session.
-DERIVED_COLUMNS: tuple[str, ...] = ("close_eur",)
+DERIVED_COLUMNS: tuple[str, ...] = ("close_eur", "quarantined")
+
+#: What a derived column the caller left out is filled with: "not converted
+#: yet" for the EUR close, "not quarantined" for the flag.
+DERIVED_DEFAULTS: dict[str, Any] = {"close_eur": float("nan"), "quarantined": False}
 
 #: What `(ticker, date)` identifies — a session — and what is compared when
 #: deciding whether a bar already on disk has actually changed.
@@ -107,6 +124,7 @@ BAR_DTYPES: dict[str, str] = {
     "close": "float64",
     "volume": "float64",
     "close_eur": "float64",
+    "quarantined": "bool",
 }
 
 #: The physical Parquet schema, stated rather than inferred. Handing this to
@@ -123,6 +141,7 @@ BAR_ARROW_SCHEMA = pa.schema(
         pa.field("close", pa.float64()),
         pa.field("volume", pa.float64()),
         pa.field("close_eur", pa.float64()),
+        pa.field("quarantined", pa.bool_(), nullable=False),
     ]
 )
 
@@ -276,11 +295,17 @@ def conform_bars(frame: pd.DataFrame) -> pd.DataFrame:
     for column in BAR_COLUMNS:
         if column not in present:
             # A derived column the caller did not compute: not yet known.
-            out[column] = pd.Series(float("nan"), index=out.index, dtype=BAR_DTYPES[column])
+            out[column] = pd.Series(
+                DERIVED_DEFAULTS[column], index=out.index, dtype=BAR_DTYPES[column]
+            )
             continue
         values = frame[column].reset_index(drop=True)
         if column == "date":
             out[column] = _conform_dates(values)
+        elif column == "quarantined":
+            # A partition written before day 20 reads back with NULL here
+            # (union_by_name); nothing had been quarantined yet.
+            out[column] = values.astype(object).where(values.notna(), False).astype("bool")
         else:
             out[column] = values.astype(BAR_DTYPES[column])
 
@@ -380,10 +405,16 @@ def read_bars(
     *,
     start: date | datetime | str | None = None,
     end: date | datetime | str | None = None,
+    include_quarantined: bool = False,
     settings: Settings | None = None,
     root: Path | str | None = None,
 ) -> pd.DataFrame:
     """Read bars out of the store, sorted by `(ticker, date)`.
+
+    Quarantined rows are left out unless `include_quarantined` is set, so
+    every feature, label and backtest computes from the trusted rows without
+    having to know there is a flag at all. The rows stay on disk; the data
+    quality checks and anything that rewrites a partition ask for them.
 
     `tickers` is one symbol, several, or None for everything stored. `start`
     and `end` are inclusive bounds on the session date. The result always
@@ -423,11 +454,8 @@ def read_bars(
     # written before day 18 has no close_eur, and naming the column would make
     # the read fail until every file had been rewritten. Read this way its
     # rows simply arrive without one, and conform_bars fills it with NaN.
-    sql = [
-        "SELECT *",
-        "FROM read_parquet(?, hive_partitioning = true, union_by_name = true)",
-    ]
-    params: list[Any] = [[str(path) for path in files]]
+    paths = [str(path) for path in files]
+    params: list[Any] = [paths]
     where: list[str] = []
     if first is not None:
         where.append('"date" >= ?')
@@ -435,16 +463,34 @@ def read_bars(
     if last is not None:
         where.append('"date" <= ?')
         params.append(last)
-    if where:
-        sql.append("WHERE " + " AND ".join(where))
-    sql.append('ORDER BY "ticker", "date"')
 
     with duckdb.connect() as con:
+        if not include_quarantined and _has_column(con, paths, "quarantined"):
+            # IS NOT TRUE rather than NOT: a partition from before day 20 has
+            # no flag column, reads it as NULL, and none of its rows are
+            # quarantined. A store with no flag column in any file at all has
+            # nothing to filter — and DuckDB would refuse to bind the name.
+            where.append('"quarantined" IS NOT TRUE')
+        sql = [
+            "SELECT *",
+            "FROM read_parquet(?, hive_partitioning = true, union_by_name = true)",
+        ]
+        if where:
+            sql.append("WHERE " + " AND ".join(where))
+        sql.append('ORDER BY "ticker", "date"')
         table = con.execute("\n".join(sql), params).to_arrow_table()
 
     # to_pandas() hands back dates as objects; conform_bars is what puts the
     # declared dtypes back, and is the same call the write path went through.
     return conform_bars(table.to_pandas())
+
+
+def _has_column(con: duckdb.DuckDBPyConnection, paths: list[str], column: str) -> bool:
+    """Whether any of the Parquet files carries `column`; reads footers only."""
+    found = con.execute(
+        "SELECT count(*) FROM parquet_schema(?) WHERE name = ?", [paths, column]
+    ).fetchone()
+    return bool(found and found[0])
 
 
 def max_stored_dates(
@@ -605,7 +651,9 @@ def _merge_one(
     root: Path | str | None,
 ) -> MergeResult:
     """Fold one ticker's new bars into its stored partition."""
-    existing = read_bars(ticker, settings=settings, root=root)
+    # Quarantined rows included: the partition is rewritten from this frame,
+    # and leaving them out here would delete them.
+    existing = read_bars(ticker, include_quarantined=True, settings=settings, root=root)
     if existing.empty:
         (path,) = write_bars(incoming, settings=settings, root=root)
         return MergeResult(ticker, added=len(incoming), stored=len(incoming), path=path)
@@ -643,8 +691,13 @@ def _merge_one(
         stored = existing.set_index("date")
         same_close = incoming["date"].map(stored["close"]) == incoming["close"]
         carry = incoming["close_eur"].isna() & same_close
+        # The quarantine flag is carried whatever the values: lifting it is the
+        # quarantine's decision (it re-runs the checks), never a side effect of
+        # Yahoo sending the session again.
+        was_quarantined = incoming["date"].map(stored["quarantined"]).fillna(False).astype(bool)
         incoming = incoming.assign(
-            close_eur=incoming["close_eur"].mask(carry, incoming["date"].map(stored["close_eur"]))
+            close_eur=incoming["close_eur"].mask(carry, incoming["date"].map(stored["close_eur"])),
+            quarantined=incoming["quarantined"] | was_quarantined,
         )
 
     kept = existing.loc[~existing["date"].isin(incoming["date"])]

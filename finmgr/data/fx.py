@@ -526,7 +526,9 @@ def refresh_close_eur(
             )
             continue
         pair = pair_for(company.currency)
-        bars = store.read_bars(symbol, settings=settings, root=bars_dir)
+        # Quarantined rows included: the partition is rewritten from this
+        # frame, and a read that left them out would delete them.
+        bars = store.read_bars(symbol, include_quarantined=True, settings=settings, root=bars_dir)
         if bars.empty:
             results.append(Conversion(symbol, company.currency, pair, error="no bars stored"))
             continue

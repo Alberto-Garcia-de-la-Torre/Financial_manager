@@ -83,6 +83,8 @@ def expected_bars(name: str) -> pd.DataFrame:
             "volume": raw["Volume"].astype("float64"),
             # Converted later, from the FX store (day 18); a fetch never knows it.
             "close_eur": float("nan"),
+            # Set only by the quarantine (day 20); a fetch never does.
+            "quarantined": False,
         }
     )
 

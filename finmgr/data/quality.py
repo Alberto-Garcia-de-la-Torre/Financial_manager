@@ -33,7 +33,7 @@ Day. Someone has to look, decide, and write the decision down — that is
 listings); `start`/`end` bound the flag's date, inclusive. `verdict` is one of
 
     genuine     the row is right and the flag is a false alarm
-    bad-data    the row is wrong; day 20 quarantines it rather than deleting it
+    bad-data    the row is wrong; `finmgr quarantine` flags it rather than deleting it
     source-gap  the session traded but Yahoo has no bar for it; nothing to fix
 
 A flag matched by a rule is *triaged*: still reported, never hidden, but it no
@@ -372,7 +372,10 @@ def run_checks(
     settings = settings or load_settings()
     venues = ticker_venues(tickers, settings=settings, path=universe)
     symbols = list(venues)
-    bars = read_bars(symbols, settings=settings, root=root)
+    # Quarantined rows included: the checks judge what is on disk, so a
+    # quarantined bar keeps raising the flag that put it there, its triage rule
+    # stays in use, and quarantining it does not turn it into a missing session.
+    bars = read_bars(symbols, include_quarantined=True, settings=settings, root=root)
     splits = _splits_by_ticker(
         read_actions(symbols, action=SPLIT, settings=settings, root=actions_root)
     )
@@ -386,7 +389,13 @@ def run_checks(
     if not first_dates.empty:
         for year in range(min(first_dates).year, last.year + 1):
             gaps = session_gaps(
-                symbols, year=year, as_of=last, settings=settings, universe=universe, root=root
+                symbols,
+                year=year,
+                as_of=last,
+                settings=settings,
+                universe=universe,
+                root=root,
+                include_quarantined=True,
             )
             flags.extend(calendar_flags(gaps))
 

@@ -16,7 +16,9 @@ missing in a year, holidays excluded. `fx` (day 18) ingests the EUR crosses
 into `data/fx/` and writes `close_eur` into every bar partition; `fx --compare`
 shows one ticker's local and EUR series diverging as FX says they must.
 `check` (day 19) runs the data quality checks and fails on any flag not yet
-triaged in `config/quality_triage.csv`. Each stub prints what it will do and
+triaged in `config/quality_triage.csv`, and `quarantine` (day 20) hides every
+row that register calls bad-data from reads — flagged in the store, recorded
+with its reason in `data/quarantine/`, never deleted. Each stub prints what it will do and
 exits non-zero, so nothing downstream can mistake "not written yet" for "ran
 successfully".
 
@@ -46,6 +48,7 @@ from finmgr.data import adjust as adjust_module
 from finmgr.data import fx as fx_module
 from finmgr.data import ingest as ingest_module
 from finmgr.data import manifest as manifest_module
+from finmgr.data import quarantine as quarantine_module
 from finmgr.data import universe as universe_module
 
 app = typer.Typer(
@@ -809,6 +812,59 @@ def check(
             ", ".join(sorted({flag.ticker for flag in untriaged})),
         )
         raise typer.Exit(code=1)
+
+
+@app.command()
+def quarantine(
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Only this universe symbol; repeatable.",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Last session the calendar checks expect (default: yesterday)."
+    ),
+) -> None:
+    """Hide every row the triage register calls bad-data from reads; delete nothing.
+
+    Runs the same checks as `check`, sets the store's `quarantined` flag on each
+    bad-data row and records it, with its reason, under `data/quarantine/`.
+    A row no longer called bad-data is released, its record kept. Re-running
+    with nothing changed writes nothing.
+    """
+    settings = load_settings()
+    try:
+        last = store.as_date(as_of, "--as-of")
+        results = quarantine_module.apply_quarantine(
+            tickers=ticker or None, as_of=last, settings=settings
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    records = quarantine_module.read_quarantine([r.ticker for r in results], settings=settings)
+    if not records.empty:
+        table = Table(title="Quarantined rows")
+        table.add_column("ticker", style="bold")
+        table.add_column("date")
+        table.add_column("check")
+        table.add_column("detail", overflow="fold")
+        table.add_column("reason", overflow="fold")
+        for record in records.itertuples():
+            table.add_row(
+                record.ticker, record.date.isoformat(), record.check, record.detail, record.reason
+            )
+        console.print(table)
+
+    console.print(
+        f"{sum(r.quarantined for r in results)} row(s) quarantined across "
+        f"{sum(bool(r.quarantined) for r in results)} ticker(s); this run "
+        f"+{sum(r.added for r in results)} added, {sum(r.released for r in results)} released, "
+        f"{sum(r.path is not None for r in results)} partition(s) rewritten"
+    )
 
 
 @app.command()

@@ -149,17 +149,29 @@ def session_gaps(
     settings: Settings | None = None,
     universe: Path | str | None = None,
     root: Path | str | None = None,
+    include_quarantined: bool = False,
 ) -> list[SessionGaps]:
     """Missing and off-calendar sessions per ticker for one calendar year.
 
     `tickers` None means the whole universe, in file order. A ticker with no
     bars at all is checked from the start of the year, so every session shows
     up as missing — "never ingested" is the biggest gap there is.
+
+    By default a quarantined bar counts as missing, because to everything
+    downstream it is. The data quality checks set `include_quarantined` so
+    they judge what is stored, quarantine or not.
     """
     venues = ticker_venues(tickers, settings=settings, path=universe)
     last = min(date(year, 12, 31), as_of or date.today() - timedelta(days=1))
     first_bars = coverage(list(venues), settings=settings, root=root).set_index("ticker")
-    bars = read_bars(list(venues), start=date(year, 1, 1), end=last, settings=settings, root=root)
+    bars = read_bars(
+        list(venues),
+        start=date(year, 1, 1),
+        end=last,
+        include_quarantined=include_quarantined,
+        settings=settings,
+        root=root,
+    )
     stored_by_ticker = {t: set(group["date"]) for t, group in bars.groupby("ticker", sort=False)}
 
     results = []

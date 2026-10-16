@@ -639,7 +639,7 @@ to `config/quality_triage.csv`. A rule there names a check, a ticker or a whole
 venue (MIC), and a date range. Its verdict is one of three:
 
 - `genuine`: the row is right.
-- `bad-data`: the row is wrong. Day 20 quarantines it.
+- `bad-data`: the row is wrong. `finmgr quarantine` hides it (below).
 - `source-gap`: Yahoo has no bar, and there is nothing local to fix.
 
 Triaged flags are still reported but no longer fail the run. The command exits
@@ -670,6 +670,39 @@ closures and went into `UNSCHEDULED_CLOSURES`. The other 352 are triaged:
   2012-05-28 and others. The register says which dates were confirmed open and
   which were left `UNCONFIRMED`, meaning no closure was found but there is no
   proof the venue traded either.
+
+### Quarantine, never delete
+
+A `bad-data` row stays in its partition. `finmgr quarantine` runs the checks
+and sets that row's `quarantined` column in the bar store. It also writes a
+record to `data/quarantine/ticker=<T>/part.parquet` with the row's values, the
+check that caught it, the flag's detail and the register's reason.
+`read_bars()` leaves quarantined rows out by default, so nothing downstream
+computes from them. `read_bars(..., include_quarantined=True)` returns them.
+
+```bash
+finmgr quarantine             # sync the flags with the register; list what is quarantined
+finmgr quarantine -t EQNR.OL  # one ticker
+```
+
+The quarantine follows the register. Each run quarantines rows newly called
+`bad-data` and releases rows that no longer are: the rule was removed, or Yahoo
+sent a bar that no longer trips the check. A released record is kept, stamped
+`released_at`. Running again with nothing changed writes nothing. Untriaged
+flags are not quarantined. They already fail `finmgr check`, and hiding them
+would hide the row someone still has to look at.
+
+Some code has to see every row:
+
+- `finmgr check` judges what is stored. A quarantined row still raises its flag
+  and still counts against its triage rule, and it does not show up as a
+  missing session.
+- `merge_bars` and the `close_eur` refresh rewrite whole partitions. If they
+  read without `include_quarantined=True`, the quarantined rows would be lost
+  on the rewrite. A merge also keeps the flag on a session Yahoo re-sends.
+
+The first run quarantined 193 rows across 48 tickers, from 194 records (one
+bar is caught by two checks).
 
 ### One currency: `close_eur`
 
@@ -729,7 +762,7 @@ finmgr --help
 
 `ingest` is real from day 11 — see "Ingesting the universe" above, and
 `finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
-quality checks" above). The other four are stubs: each prints
+quality checks" above), and `quarantine` (day 20) sits right after it. The other four are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what
