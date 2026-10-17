@@ -83,6 +83,7 @@ Every target bootstraps `.venv` first, so a fresh clone needs nothing but
 
 ```bash
 make test    # pytest
+make leak    # the look-ahead leak test alone; after every change to finmgr/data/
 make lint    # ruff check + ruff format --check, changes nothing
 make fmt     # ruff format + ruff check --fix
 make check   # lint, then test
@@ -276,13 +277,14 @@ the file to open follows from the ticker alone. The `ticker` column is stored
 readable on its own.
 
 ```python
+from finmgr.data.pit import LATEST
 from finmgr.data.store import max_stored_dates, merge_bars, read_bars, write_bars
 
 write_bars(frame)                                    # replace a ticker's partition
 merge_bars(frame)                                    # ... or fold it into what is there
-read_bars()                                          # everything stored
-read_bars("AAPL")                                    # one ticker
-read_bars(["AAPL", "SAN.MC"], start="2024-01-01")    # bounds are inclusive
+read_bars(as_of=LATEST)                              # everything stored, up to today
+read_bars("AAPL", as_of="2024-06-28")                # one ticker, as known that evening
+read_bars(["AAPL", "SAN.MC"], start="2024-01-01", as_of="2024-06-28")  # inclusive bounds
 max_stored_dates()                                   # {"AAPL": date(2026, 9, 25), ...}
 ```
 
@@ -703,6 +705,28 @@ Some code has to see every row:
 
 The first run quarantined 193 rows across 48 tickers, from 194 records (one
 bar is caught by two checks).
+
+### Point in time: every read takes `as_of`
+
+Every read function in the data layer (`read_bars`, `read_actions`, `read_fx`,
+`read_adjusted`, `read_quarantine`) takes a required `as_of` and never returns
+a row dated after it. There is no default: a forgotten bound is how look-ahead
+gets in, so "everything up to today" has to be asked for by name, as
+`as_of=LATEST`. The date bound goes into the query. Then `finmgr.data.pit.guard`
+checks the result again and raises `LookAheadError` if a later row got
+through; it never trims. An `end` or `start` after `as_of` also raises.
+
+`read_adjusted` builds its split and dividend factors only from bars and
+actions dated on or before `as_of`. A dividend that goes ex next month cannot
+rescale this month's closes. `finmgr adjusted --as-of DATE` prints the series
+as it was known on that date.
+
+`tests/test_pit.py` is the leak test. It puts rows after `as_of` in every store
+and tries to read them back: asking for them, calling without `as_of`, and
+breaking the query's own date bound on purpose. Every attempt has to fail. It
+also fails if a new `read_*` function appears in `finmgr.data` without a
+required `as_of`. Run it with `make leak`. The `leak-test` pre-commit hook
+runs it on any commit that touches `finmgr/data/`.
 
 ### One currency: `close_eur`
 

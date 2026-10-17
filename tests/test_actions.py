@@ -29,6 +29,7 @@ from finmgr.data.actions import (
     read_actions,
     to_actions,
 )
+from finmgr.data.pit import LATEST
 
 AAPL = "AAPL_2020-08-24_2020-09-04"
 SANTANDER = "SAN.MC_2024-10-28_2024-11-11"
@@ -82,7 +83,7 @@ def test_aapl_split_round_trips_through_the_store(tmp_path: Path) -> None:
     found = fetch_actions("AAPL", "2020-08-24", "2020-09-04", download=from_fixture(AAPL))
     merge_actions(found, root=tmp_path)
 
-    split = read_actions("AAPL", action="split", root=tmp_path)
+    split = read_actions("AAPL", action="split", root=tmp_path, as_of=LATEST)
 
     assert (tmp_path / "ticker=AAPL" / "part.parquet").is_file()
     assert len(split) == 1
@@ -113,7 +114,7 @@ def test_merge_is_idempotent_and_keeps_what_the_source_forgot(tmp_path: Path) ->
     assert (first[0].added, first[0].path is not None) == (2, True)
     assert (again[0].added, again[0].updated, again[0].path) == (0, 0, None)
     assert (revised[0].added, revised[0].updated) == (0, 1)
-    stored = read_actions("X", root=tmp_path)
+    stored = read_actions("X", root=tmp_path, as_of=LATEST)
     assert stored[["action", "value"]].to_dict("records") == [
         {"action": "dividend", "value": 0.55},
         {"action": "split", "value": 2.0},
@@ -172,7 +173,7 @@ def test_ingest_survives_a_bad_ticker(tmp_path: Path) -> None:
     assert (by_ticker["SAN.MC"].dividends, by_ticker["SAN.MC"].added) == (1, 1)
     assert not by_ticker["NOPE"].ok
     assert by_ticker["NOPE"].attempts == 2
-    assert set(read_actions(root=tmp_path)["ticker"]) == {"AAPL", "SAN.MC"}
+    assert set(read_actions(root=tmp_path, as_of=LATEST)["ticker"]) == {"AAPL", "SAN.MC"}
 
 
 def test_cli_show_prints_the_aapl_split(

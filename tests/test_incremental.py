@@ -39,6 +39,7 @@ from finmgr.data.ingest import (
     incremental_start,
     ingest_universe,
 )
+from finmgr.data.pit import LATEST
 from finmgr.data.store import (
     conform_bars,
     max_stored_date,
@@ -158,7 +159,7 @@ def test_running_ingest_twice_writes_zero_new_rows_the_second_time(
     yahoo = Yahoo()
 
     first = run(tmp_path, yahoo, slept)
-    stored = read_bars(root=tmp_path)
+    stored = read_bars(root=tmp_path, as_of=LATEST)
     written_at = mtimes(tmp_path)
 
     assert first.added == len(stored) == 40
@@ -172,7 +173,7 @@ def test_running_ingest_twice_writes_zero_new_rows_the_second_time(
     assert all(result.status is Status.OK for result in second.results)
     assert "0 new" in second.summary()
     # ... the store agrees ...
-    pd.testing.assert_frame_equal(read_bars(root=tmp_path), stored)
+    pd.testing.assert_frame_equal(read_bars(root=tmp_path, as_of=LATEST), stored)
     # ... and no partition was reopened for writing.
     assert mtimes(tmp_path) == written_at
     assert not any(result.written for result in second.results)
@@ -201,7 +202,7 @@ def test_the_cli_run_twice_writes_zero_new_rows(
     argv = "ingest -t AAPL -t SAN.MC --start 2026-09-01 --end 2026-09-30 --pause 0"
 
     first = CliRunner().invoke(app, argv.split())
-    stored = read_bars(root=bars)
+    stored = read_bars(root=bars, as_of=LATEST)
     written_at = mtimes(bars)
 
     assert first.exit_code == 0, first.output
@@ -212,7 +213,7 @@ def test_the_cli_run_twice_writes_zero_new_rows(
     assert second.exit_code == 0, second.output
     assert "0 new" in second.output
     assert mtimes(bars) == written_at
-    pd.testing.assert_frame_equal(read_bars(root=bars), stored)
+    pd.testing.assert_frame_equal(read_bars(root=bars, as_of=LATEST), stored)
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +323,7 @@ def test_new_sessions_are_added_to_the_stored_history(tmp_path: Path, slept: lis
 
     assert second.added == 6, "three new sessions for each of two tickers"
     assert second.updated == 0
-    stored = read_bars("AAPL", root=tmp_path)
+    stored = read_bars("AAPL", root=tmp_path, as_of=LATEST)
     assert len(stored) == 23
     assert stored["date"].is_monotonic_increasing
     assert not stored.duplicated(subset=["ticker", "date"]).any()
@@ -338,7 +339,7 @@ def test_a_revised_bar_overwrites_rather_than_appends(tmp_path: Path, slept: lis
 
     assert report.added == 0
     assert report.updated == 1
-    stored = read_bars("AAPL", root=tmp_path)
+    stored = read_bars("AAPL", root=tmp_path, as_of=LATEST)
     assert len(stored) == 20
     assert not stored.duplicated(subset=["ticker", "date"]).any()
     assert stored.loc[stored["date"] == revised, "close"].tolist() == [123.45]
@@ -360,7 +361,7 @@ def test_merge_counts_what_it_did_per_ticker(tmp_path: Path) -> None:
     assert (result.added, result.updated, result.unchanged) == (4, 1, 1)
     assert result.stored == 14
     assert result.changed and result.path == partition_path("AAPL", root=tmp_path)
-    assert len(read_bars("AAPL", root=tmp_path)) == 14
+    assert len(read_bars("AAPL", root=tmp_path, as_of=LATEST)) == 14
 
 
 def test_an_unchanged_merge_leaves_the_file_alone(tmp_path: Path) -> None:
@@ -377,7 +378,7 @@ def test_an_unchanged_merge_leaves_the_file_alone(tmp_path: Path) -> None:
 
 def test_merging_nothing_is_not_an_error(tmp_path: Path) -> None:
     assert merge_bars(history("AAPL").iloc[:0], root=tmp_path) == []
-    assert read_bars(root=tmp_path).empty
+    assert read_bars(root=tmp_path, as_of=LATEST).empty
 
 
 def test_a_nan_volume_is_not_mistaken_for_a_revision(tmp_path: Path) -> None:
@@ -398,7 +399,7 @@ def test_merging_several_tickers_at_once(tmp_path: Path) -> None:
 
     assert [result.ticker for result in results] == ["AAPL", "SAN.MC"]
     assert all(result.added == 5 for result in results)
-    assert len(read_bars(root=tmp_path)) == 10
+    assert len(read_bars(root=tmp_path, as_of=LATEST)) == 10
 
 
 def test_the_status_row_records_the_window_it_actually_asked_for(

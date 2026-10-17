@@ -168,6 +168,7 @@ def session_gaps(
         list(venues),
         start=date(year, 1, 1),
         end=last,
+        as_of=last,
         include_quarantined=include_quarantined,
         settings=settings,
         root=root,

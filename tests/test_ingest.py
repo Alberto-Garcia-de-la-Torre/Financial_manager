@@ -48,6 +48,7 @@ from finmgr.data.ingest import (
     ingest_ticker,
     ingest_universe,
 )
+from finmgr.data.pit import LATEST
 from finmgr.data.store import empty_bars, read_bars, stored_tickers
 from finmgr.data.universe import Company
 
@@ -159,7 +160,7 @@ def test_pulling_the_cable_mid_run_still_reports_what_succeeded(
     assert report.rows == 3 * len(bars_for("T00"))
     # What the report says succeeded is what is actually on disk.
     assert stored_tickers(root=tmp_path) == ["T00", "T01", "T02"]
-    assert len(read_bars("T01", root=tmp_path)) == len(bars_for("T01"))
+    assert len(read_bars("T01", root=tmp_path, as_of=LATEST)) == len(bars_for("T01"))
 
     # Everything else is accounted for: no ticker silently disappears.
     assert len(report.results) == 20

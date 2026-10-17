@@ -56,6 +56,7 @@ import numpy as np
 import pandas as pd
 
 from finmgr.config import Settings, load_settings
+from finmgr.data import pit
 from finmgr.data.actions import SPLIT, read_actions
 from finmgr.data.calendars import SessionGaps, session_gaps, ticker_venues
 from finmgr.data.store import coverage, read_bars
@@ -375,9 +376,14 @@ def run_checks(
     # Quarantined rows included: the checks judge what is on disk, so a
     # quarantined bar keeps raising the flag that put it there, its triage rule
     # stays in use, and quarantining it does not turn it into a missing session.
-    bars = read_bars(symbols, include_quarantined=True, settings=settings, root=root)
+    # Up to today rather than `as_of`: the price checks judge every stored bar,
+    # including the one that arrived this evening, and only the calendar checks
+    # stop at `as_of`.
+    bars = read_bars(
+        symbols, as_of=pit.LATEST, include_quarantined=True, settings=settings, root=root
+    )
     splits = _splits_by_ticker(
-        read_actions(symbols, action=SPLIT, settings=settings, root=actions_root)
+        read_actions(symbols, action=SPLIT, as_of=pit.LATEST, settings=settings, root=actions_root)
     )
 
     flags: list[Flag] = []

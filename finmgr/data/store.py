@@ -28,7 +28,7 @@ ticker alone.
 
     write_bars(frame)                                   # frame in the schema above
     merge_bars(frame)                                   # ... or fold it into what is stored
-    read_bars(["AAPL", "SAN.MC"], start="2024-01-01")   # back out again
+    read_bars(["AAPL", "SAN.MC"], start="2024-01-01", as_of="2024-06-28")
 
 The schema is fixed *now*, before day 10 downloads anything, because every
 feature, label and backtest downstream assumes these column names and these
@@ -67,6 +67,11 @@ in it deserves to find the bar, the flag and the reason — the last of which is
 in `data/quarantine/`. Anything that reads a partition in order to *rewrite*
 it — a merge, the EUR conversion — must read with `include_quarantined=True`,
 or the rewrite would be the silent delete this column exists to prevent.
+
+Every read names its point in time (day 21). :func:`read_bars` takes a required
+`as_of` and never returns a session dated after it — see
+:mod:`finmgr.data.pit` for why there is no default, and `tests/test_pit.py` for
+the leak test that has to keep passing.
 """
 
 from __future__ import annotations
@@ -84,6 +89,7 @@ import pyarrow.parquet as pq
 
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
+from finmgr.data import pit
 
 #: The columns of a bar frame, in order.
 BAR_COLUMNS: tuple[str, ...] = (
@@ -405,11 +411,16 @@ def read_bars(
     *,
     start: date | datetime | str | None = None,
     end: date | datetime | str | None = None,
+    as_of: pit.AsOf,
     include_quarantined: bool = False,
     settings: Settings | None = None,
     root: Path | str | None = None,
 ) -> pd.DataFrame:
     """Read bars out of the store, sorted by `(ticker, date)`.
+
+    `as_of` is required: no session dated after it is ever returned. An `end`
+    after it raises :class:`~finmgr.data.pit.LookAheadError`, and so does any
+    row that gets past the query's own bound. `pit.LATEST` means today.
 
     Quarantined rows are left out unless `include_quarantined` is set, so
     every feature, label and backtest computes from the trusted rows without
@@ -428,6 +439,7 @@ def read_bars(
     for. Fifteen years of 100 tickers is small enough to fit in memory, and
     day 29 will want exactly that — but most reads are one slice of it.
     """
+    cutoff = pit.resolve_as_of(as_of)
     if isinstance(tickers, str):
         requested: list[str] | None = [tickers]
     elif tickers is None:
@@ -442,8 +454,8 @@ def read_bars(
         return empty_bars()
 
     first = as_date(start, "start")
-    last = as_date(end, "end")
-    if first is not None and last is not None and first > last:
+    last = pit.bound_end(as_date(end, "end"), cutoff, start=first)
+    if first is not None and first > last:
         raise ValueError(f"start {first} is after end {last}")
 
     # hive_partitioning reads `ticker` back out of the directory name. The
@@ -456,13 +468,11 @@ def read_bars(
     # rows simply arrive without one, and conform_bars fills it with NaN.
     paths = [str(path) for path in files]
     params: list[Any] = [paths]
-    where: list[str] = []
+    where: list[str] = ['"date" <= ?']
+    params.append(last)
     if first is not None:
         where.append('"date" >= ?')
         params.append(first)
-    if last is not None:
-        where.append('"date" <= ?')
-        params.append(last)
 
     with duckdb.connect() as con:
         if not include_quarantined and _has_column(con, paths, "quarantined"):
@@ -475,14 +485,13 @@ def read_bars(
             "SELECT *",
             "FROM read_parquet(?, hive_partitioning = true, union_by_name = true)",
         ]
-        if where:
-            sql.append("WHERE " + " AND ".join(where))
+        sql.append("WHERE " + " AND ".join(where))
         sql.append('ORDER BY "ticker", "date"')
         table = con.execute("\n".join(sql), params).to_arrow_table()
 
     # to_pandas() hands back dates as objects; conform_bars is what puts the
     # declared dtypes back, and is the same call the write path went through.
-    return conform_bars(table.to_pandas())
+    return pit.guard(conform_bars(table.to_pandas()), cutoff, what="read_bars")
 
 
 def _has_column(con: duckdb.DuckDBPyConnection, paths: list[str], column: str) -> bool:
@@ -653,7 +662,9 @@ def _merge_one(
     """Fold one ticker's new bars into its stored partition."""
     # Quarantined rows included: the partition is rewritten from this frame,
     # and leaving them out here would delete them.
-    existing = read_bars(ticker, include_quarantined=True, settings=settings, root=root)
+    existing = read_bars(
+        ticker, as_of=pit.LATEST, include_quarantined=True, settings=settings, root=root
+    )
     if existing.empty:
         (path,) = write_bars(incoming, settings=settings, root=root)
         return MergeResult(ticker, added=len(incoming), stored=len(incoming), path=path)

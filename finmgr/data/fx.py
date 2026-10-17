@@ -4,7 +4,7 @@
 
     ingest_fx()                          # EURUSD, EURGBP, ... into data/fx/
     refresh_close_eur()                  # write close_eur into every bar partition
-    read_fx("EURUSD", start="2025-01-01")
+    read_fx("EURUSD", start="2025-01-01", as_of=LATEST)
 
 A US and a Spanish stock are not comparable until both are in one currency, and
 this project's currency is EUR (`base_currency` in settings). So every listing
@@ -67,7 +67,7 @@ import pyarrow.parquet as pq
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import fetch as fetch_module
-from finmgr.data import store
+from finmgr.data import pit, store
 from finmgr.data.ingest import (
     DEFAULT_ABORT_AFTER,
     DEFAULT_ATTEMPTS,
@@ -254,7 +254,7 @@ def merge_fx(
     results = []
     for pair, group in incoming.groupby("pair", sort=True):
         cross = str(pair)
-        existing = read_fx(cross, settings=settings, root=root)
+        existing = read_fx(cross, as_of=pit.LATEST, settings=settings, root=root)
         joined = group.merge(
             existing, on=list(FX_KEY), how="left", suffixes=("", "_old"), indicator=True
         )
@@ -282,10 +282,16 @@ def read_fx(
     *,
     start: date | datetime | str | None = None,
     end: date | datetime | str | None = None,
+    as_of: pit.AsOf,
     settings: Settings | None = None,
     root: Path | str | None = None,
 ) -> pd.DataFrame:
-    """Read rates out of the store, sorted by `(pair, date)`. Empty, never absent."""
+    """Read rates out of the store, sorted by `(pair, date)`. Empty, never absent.
+
+    `as_of` is required and no rate dated after it is returned
+    (:mod:`finmgr.data.pit`).
+    """
+    cutoff = pit.resolve_as_of(as_of)
     base = fx_root(settings=settings, root=root)
     if pairs is None:
         files = sorted(base.glob(f"pair=*/{PART_FILENAME}"))
@@ -305,16 +311,15 @@ def read_fx(
     where = []
     for clause, value in (
         ('"date" >= ?', as_date(start, "start")),
-        ('"date" <= ?', as_date(end, "end")),
+        ('"date" <= ?', pit.bound_end(as_date(end, "end"), cutoff, start=as_date(start, "start"))),
     ):
         if value is not None:
             where.append(clause)
             params.append(value)
-    if where:
-        sql += " WHERE " + " AND ".join(where)
+    sql += " WHERE " + " AND ".join(where)
     with duckdb.connect() as con:
         table = con.execute(sql, params).to_arrow_table()
-    return conform_fx(table.to_pandas())
+    return pit.guard(conform_fx(table.to_pandas()), cutoff, what="read_fx")
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +520,7 @@ def refresh_close_eur(
         if tickers is None
         else [str(t).strip() for t in tickers]
     )
-    rates = read_fx(settings=settings, root=fx_dir)
+    rates = read_fx(as_of=pit.LATEST, settings=settings, root=fx_dir)
 
     results: list[Conversion] = []
     for symbol in symbols:
@@ -528,7 +533,9 @@ def refresh_close_eur(
         pair = pair_for(company.currency)
         # Quarantined rows included: the partition is rewritten from this
         # frame, and a read that left them out would delete them.
-        bars = store.read_bars(symbol, include_quarantined=True, settings=settings, root=bars_dir)
+        bars = store.read_bars(
+            symbol, as_of=pit.LATEST, include_quarantined=True, settings=settings, root=bars_dir
+        )
         if bars.empty:
             results.append(Conversion(symbol, company.currency, pair, error="no bars stored"))
             continue
@@ -632,7 +639,11 @@ def divergence(
     company = listed.get(ticker)
     if company is None:
         raise ValueError(f"{ticker} is not in the universe")
-    bars = store.read_bars(ticker, start=start, end=end, settings=settings, root=bars_dir)
+    # The window's end is its point in time: neither series reaches past it.
+    as_of = end if end is not None else pit.LATEST
+    bars = store.read_bars(
+        ticker, start=start, end=end, as_of=as_of, settings=settings, root=bars_dir
+    )
     bars = bars.loc[bars["close_eur"].notna() & bars["close"].notna()].reset_index(drop=True)
     if len(bars) < 2:
         raise ValueError(f"{ticker}: fewer than two converted sessions in the window")
@@ -640,7 +651,8 @@ def divergence(
     if pair is None:
         rate = pd.Series(1.0, index=bars.index)
     else:
-        rate = rate_on(bars["date"], pair, read_fx(pair, settings=settings, root=fx_dir))
+        rates = read_fx(pair, as_of=as_of, settings=settings, root=fx_dir)
+        rate = rate_on(bars["date"], pair, rates)
     series = pd.DataFrame(
         {
             "date": bars["date"],

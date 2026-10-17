@@ -27,6 +27,7 @@ import yahoo_fixtures
 from finmgr.config import Settings
 from finmgr.data import fetch
 from finmgr.data.fetch import fetch_daily, to_bars
+from finmgr.data.pit import LATEST
 from finmgr.data.store import BAR_COLUMNS, BAR_DTYPES, read_bars, write_bars
 
 AAPL = "AAPL_2020-08-24_2020-09-04"
@@ -383,7 +384,7 @@ def test_fetched_bars_go_straight_into_the_store(tmp_path: Path) -> None:
     bars = fetch_daily("SAN.MC", "2024-10-28", "2024-11-11", download=responder(SANTANDER))
 
     write_bars(bars, root=tmp_path)
-    restored = read_bars("SAN.MC", root=tmp_path)
+    restored = read_bars("SAN.MC", root=tmp_path, as_of=LATEST)
 
     pd.testing.assert_frame_equal(restored, bars)
 

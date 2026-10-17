@@ -13,6 +13,7 @@ repository under test is disposable; this repository is never touched.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -99,7 +100,12 @@ def hook_repo(tmp_path: Path) -> HookRepo:
     # Same shape as the real repository: data/ is ignored, so staging anything
     # out of it takes the deliberate `git add -f` the acceptance criterion means.
     repo.write(".gitignore", "/data/\n.venv/\n")
-    repo.write("tools/pre-commit-config.yaml", HOOK_CONFIG.read_text(encoding="utf-8"))
+    # Minus the leak-test hook: it runs the project's own test suite, which this
+    # scratch clone does not have. Its trigger is checked on the config below.
+    config = yaml.safe_load(HOOK_CONFIG.read_text(encoding="utf-8"))
+    for hooks in config["repos"]:
+        hooks["hooks"] = [hook for hook in hooks["hooks"] if hook["id"] != "leak-test"]
+    repo.write("tools/pre-commit-config.yaml", yaml.safe_dump(config, sort_keys=False))
 
     repo.run("git", "init", "--initial-branch=main")
     repo.run("git", "config", "user.email", "test@example.invalid")
@@ -183,8 +189,21 @@ def test_badly_formatted_python_is_rejected_by_ruff(hook_repo: HookRepo) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_the_config_declares_the_three_hooks() -> None:
+def test_the_config_declares_the_four_hooks() -> None:
     config = yaml.safe_load(HOOK_CONFIG.read_text(encoding="utf-8"))
     ids = [hook["id"] for repo in config["repos"] for hook in repo["hooks"]]
 
-    assert ids == ["no-data-in-git", "ruff-check", "ruff-format"]
+    assert ids == ["no-data-in-git", "ruff-check", "ruff-format", "leak-test"]
+
+
+def test_the_leak_test_reruns_on_every_data_layer_change() -> None:
+    config = yaml.safe_load(HOOK_CONFIG.read_text(encoding="utf-8"))
+    (hook,) = [h for repo in config["repos"] for h in repo["hooks"] if h["id"] == "leak-test"]
+    pattern = re.compile(hook["files"])
+
+    assert "tests/test_pit.py" in hook["entry"]
+    assert hook["pass_filenames"] is False
+    for path in ("finmgr/data/store.py", "finmgr/data/fx.py", "tests/test_pit.py"):
+        assert pattern.search(path), path
+    for path in ("finmgr/cli.py", "tests/test_store.py", "data/bars/daily/x.parquet"):
+        assert not pattern.search(path), path

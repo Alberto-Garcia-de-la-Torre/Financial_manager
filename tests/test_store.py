@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from finmgr.config import Settings
+from finmgr.data.pit import LATEST
 from finmgr.data.store import (
     BAR_ARROW_SCHEMA,
     BAR_COLUMNS,
@@ -95,7 +96,7 @@ def test_round_trip_preserves_dtypes(root: Path) -> None:
     original = synthetic_bars()
 
     write_bars(original, root=root)
-    restored = read_bars(root=root)
+    restored = read_bars(root=root, as_of=LATEST)
 
     assert list(restored.columns) == list(BAR_COLUMNS)
     assert restored.dtypes.to_dict() == original.dtypes.to_dict()
@@ -105,7 +106,7 @@ def test_round_trip_preserves_dtypes(root: Path) -> None:
 def test_round_trip_dtypes_match_the_declared_schema(root: Path) -> None:
     """And those dtypes are the ones the module promises, not merely stable."""
     write_bars(synthetic_bars(), root=root)
-    restored = read_bars(root=root)
+    restored = read_bars(root=root, as_of=LATEST)
 
     assert {column: str(dtype) for column, dtype in restored.dtypes.items()} == BAR_DTYPES
 
@@ -125,7 +126,7 @@ def test_round_trip_normalises_sloppy_input(root: Path) -> None:
     )
 
     write_bars(sloppy, root=root)
-    restored = read_bars(root=root)
+    restored = read_bars(root=root, as_of=LATEST)
 
     assert {column: str(dtype) for column, dtype in restored.dtypes.items()} == BAR_DTYPES
     # float32 -> float64 is not lossless, so compare on the columns that were
@@ -182,9 +183,9 @@ def test_rewriting_a_ticker_replaces_its_partition(root: Path) -> None:
     shorter = synthetic_bars(tickers=("AAPL",), sessions=5, seed=7)
     write_bars(shorter, root=root)
 
-    assert len(read_bars("AAPL", root=root)) == 5
-    assert len(read_bars("SAN.MC", root=root)) == 40
-    pd.testing.assert_frame_equal(read_bars("AAPL", root=root), shorter)
+    assert len(read_bars("AAPL", root=root, as_of=LATEST)) == 5
+    assert len(read_bars("SAN.MC", root=root, as_of=LATEST)) == 40
+    pd.testing.assert_frame_equal(read_bars("AAPL", root=root, as_of=LATEST), shorter)
 
 
 def test_write_bars_returns_the_files_it_wrote(root: Path) -> None:
@@ -201,8 +202,8 @@ def test_write_bars_returns_the_files_it_wrote(root: Path) -> None:
 def test_read_filters_by_ticker(root: Path) -> None:
     write_bars(synthetic_bars(), root=root)
 
-    one = read_bars("SAN.MC", root=root)
-    several = read_bars(["AAPL", "BRK-B"], root=root)
+    one = read_bars("SAN.MC", root=root, as_of=LATEST)
+    several = read_bars(["AAPL", "BRK-B"], root=root, as_of=LATEST)
 
     assert one["ticker"].unique().tolist() == ["SAN.MC"]
     assert several["ticker"].unique().tolist() == ["AAPL", "BRK-B"]
@@ -213,7 +214,7 @@ def test_read_filters_by_date_inclusively(root: Path) -> None:
     write_bars(original, root=root)
 
     first, last = dt.date(2024, 1, 10), dt.date(2024, 1, 19)
-    window = read_bars(root=root, start=first, end=last)
+    window = read_bars(root=root, start=first, end=last, as_of=LATEST)
     expected = original[original["date"].between(first, last)].reset_index(drop=True)
 
     pd.testing.assert_frame_equal(window, expected)
@@ -224,8 +225,10 @@ def test_read_filters_by_date_inclusively(root: Path) -> None:
 def test_read_accepts_iso_date_strings(root: Path) -> None:
     write_bars(synthetic_bars(), root=root)
 
-    by_string = read_bars(root=root, start="2024-01-10", end="2024-01-19")
-    by_date = read_bars(root=root, start=dt.date(2024, 1, 10), end=dt.date(2024, 1, 19))
+    by_string = read_bars(root=root, start="2024-01-10", end="2024-01-19", as_of=LATEST)
+    by_date = read_bars(
+        root=root, start=dt.date(2024, 1, 10), end=dt.date(2024, 1, 19), as_of=LATEST
+    )
 
     pd.testing.assert_frame_equal(by_string, by_date)
 
@@ -233,7 +236,7 @@ def test_read_accepts_iso_date_strings(root: Path) -> None:
 def test_read_is_sorted_by_ticker_then_date(root: Path) -> None:
     write_bars(synthetic_bars(), root=root)
 
-    restored = read_bars(root=root)
+    restored = read_bars(root=root, as_of=LATEST)
     assert restored.equals(restored.sort_values(["ticker", "date"]).reset_index(drop=True))
 
 
@@ -242,35 +245,37 @@ def test_read_is_sorted_by_ticker_then_date(root: Path) -> None:
     [
         pytest.param({"tickers": "NOPE"}, id="unknown-ticker"),
         pytest.param({"tickers": []}, id="no-tickers-asked-for"),
-        pytest.param({"start": "2030-01-01"}, id="date-window-with-no-sessions"),
+        pytest.param(
+            {"start": "2030-01-01", "as_of": "2030-12-31"}, id="date-window-with-no-sessions"
+        ),
     ],
 )
 def test_reads_that_match_nothing_still_carry_the_schema(root: Path, kwargs: dict) -> None:
     """Callers should never have to special-case "this matched nothing"."""
     write_bars(synthetic_bars(tickers=("AAPL",), sessions=2), root=root)
 
-    result = read_bars(root=root, **kwargs)
+    result = read_bars(root=root, **{"as_of": LATEST, **kwargs})
 
     assert result.empty
     assert {column: str(dtype) for column, dtype in result.dtypes.items()} == BAR_DTYPES
 
 
 def test_reading_an_empty_store_carries_the_schema(root: Path) -> None:
-    result = read_bars(root=root)
+    result = read_bars(root=root, as_of=LATEST)
 
     assert result.empty
     assert {column: str(dtype) for column, dtype in result.dtypes.items()} == BAR_DTYPES
 
 
 def test_empty_bars_matches_a_read_of_an_empty_store(root: Path) -> None:
-    pd.testing.assert_frame_equal(read_bars(root=root), empty_bars())
+    pd.testing.assert_frame_equal(read_bars(root=root, as_of=LATEST), empty_bars())
 
 
 def test_read_rejects_a_reversed_date_range(root: Path) -> None:
     write_bars(synthetic_bars(sessions=5), root=root)
 
     with pytest.raises(ValueError, match="after end"):
-        read_bars(root=root, start="2024-02-01", end="2024-01-01")
+        read_bars(root=root, start="2024-02-01", end="2024-01-01", as_of=LATEST)
 
 
 def test_writing_nothing_writes_nothing(root: Path) -> None:
@@ -322,11 +327,11 @@ def test_read_accepts_a_partition_written_before_close_eur(root: Path) -> None:
         pa.Table.from_pandas(old.drop(columns=["close_eur"]), preserve_index=False), legacy
     )
 
-    restored = read_bars(root=root)
+    restored = read_bars(root=root, as_of=LATEST)
 
     assert restored.loc[restored["ticker"] == "OLD", "close_eur"].isna().all()
     assert restored.loc[restored["ticker"] == "NEW", "close_eur"].notna().all()
-    assert read_bars("OLD", root=root)["close_eur"].isna().all()
+    assert read_bars("OLD", root=root, as_of=LATEST)["close_eur"].isna().all()
 
 
 def test_merge_keeps_the_eur_close_of_a_session_yahoo_sent_back_unchanged(root: Path) -> None:
@@ -336,7 +341,7 @@ def test_merge_keeps_the_eur_close_of_a_session_yahoo_sent_back_unchanged(root: 
     refetched.loc[2, "close"] += 1.0  # a revised session
 
     merge_bars(refetched, root=root)
-    after = read_bars("AAPL", root=root)
+    after = read_bars("AAPL", root=root, as_of=LATEST)
 
     assert (
         after["close_eur"].iloc[[0, 1, 3]].tolist() == stored["close_eur"].iloc[[0, 1, 3]].tolist()
@@ -417,7 +422,7 @@ def test_settings_round_trip_writes_under_the_data_dir(tmp_path: Path) -> None:
     original = synthetic_bars(tickers=("AAPL",), sessions=6)
 
     write_bars(original, settings=settings)
-    restored = read_bars("AAPL", settings=settings)
+    restored = read_bars("AAPL", settings=settings, as_of=LATEST)
 
     assert (tmp_path / "store" / "bars" / "daily" / "ticker=AAPL" / "part.parquet").is_file()
     pd.testing.assert_frame_equal(restored, original)

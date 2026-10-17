@@ -8,6 +8,7 @@
 #      `git add -f` walks straight past it — this hook is the part that says no.
 #   2. Keep the tree lint-clean and formatted, so `make lint` on a fresh clone
 #      is green for the same reason it was green yesterday.
+#   3. Re-run the look-ahead leak test (day 21) whenever the data layer changes.
 #
 # Everything here is a local hook: no hook repository is cloned, nothing is
 # downloaded at commit time, and the ruff that runs here is byte-for-byte the
@@ -46,4 +47,15 @@ repos:
         language: system
         entry: .venv/bin/ruff format --force-exclude
         types_or: [python, pyi]
+        require_serial: true
+
+      # Day 21: any commit touching the data layer re-runs the leak test, so a
+      # reader that starts returning rows after its `as_of` cannot be committed.
+      # It runs the test file, not the staged paths, hence pass_filenames.
+      - id: leak-test
+        name: point-in-time leak test (tests/test_pit.py)
+        language: system
+        entry: .venv/bin/pytest -q tests/test_pit.py
+        files: '^(finmgr/data/|tests/test_pit\.py$)'
+        pass_filenames: false
         require_serial: true

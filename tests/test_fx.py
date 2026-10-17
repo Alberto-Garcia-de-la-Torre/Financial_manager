@@ -37,6 +37,7 @@ from finmgr.data.fx import (
     universe_pairs,
     yahoo_symbol,
 )
+from finmgr.data.pit import LATEST
 from finmgr.data.store import read_bars, write_bars
 from finmgr.data.universe import Company
 
@@ -184,7 +185,7 @@ def test_merging_rates_twice_adds_nothing_and_revisions_overwrite(fx_dir: Path) 
 
     assert (first.added, again.added, again.path) == (3, 0, None)
     assert (revised.added, revised.updated, revised.stored) == (0, 1, 3)
-    assert read_fx("EURUSD", root=fx_dir)["rate"].tolist() == [1.03, 1.04, 1.06]
+    assert read_fx("EURUSD", root=fx_dir, as_of=LATEST)["rate"].tolist() == [1.03, 1.04, 1.06]
 
 
 def test_fetch_fx_keeps_yahoos_close_as_the_rate() -> None:
@@ -233,7 +234,7 @@ def test_one_failing_pair_does_not_stop_the_others(fx_dir: Path) -> None:
         ("EURCHF", False, 0),
         ("EURSEK", True, 1),
     ]
-    assert sorted(read_fx(root=fx_dir)["pair"]) == ["EURSEK", "EURUSD"]
+    assert sorted(read_fx(root=fx_dir, as_of=LATEST)["pair"]) == ["EURSEK", "EURUSD"]
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +257,10 @@ def test_refresh_writes_close_eur_once_and_then_leaves_the_store_alone(
     }
     second = refresh_close_eur(bars_dir=bars_dir, fx_dir=fx_dir, companies=COMPANIES)
 
-    assert read_bars("AAPL", root=bars_dir)["close_eur"].tolist() == pytest.approx([110, 100, 88])
-    assert read_bars("SAN.MC", root=bars_dir)["close_eur"].tolist() == [4.0, 4.0, 4.0]
+    assert read_bars("AAPL", root=bars_dir, as_of=LATEST)["close_eur"].tolist() == pytest.approx(
+        [110, 100, 88]
+    )
+    assert read_bars("SAN.MC", root=bars_dir, as_of=LATEST)["close_eur"].tolist() == [4.0, 4.0, 4.0]
     assert first["AAPL"].converted == 3 and first["AAPL"].path is not None
     assert "not in the universe" in first["ZZZ"].error
     assert all(r.path is None for r in second)
@@ -270,7 +273,7 @@ def test_a_missing_cross_is_reported_not_guessed(bars_dir: Path, fx_dir: Path) -
 
     assert result.converted == 0
     assert "no EURGBP rates" in result.error
-    assert read_bars("AZN.L", root=bars_dir)["close_eur"].isna().all()
+    assert read_bars("AZN.L", root=bars_dir, as_of=LATEST)["close_eur"].isna().all()
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +306,7 @@ def test_the_eur_series_diverges_in_the_direction_fx_moved(bars_dir: Path, fx_di
 def test_a_conversion_the_wrong_way_round_is_caught(bars_dir: Path, fx_dir: Path) -> None:
     """Multiplying by EURUSD instead of dividing is the classic slip; the check must see it."""
     stock_flat_in_dollars_while_the_euro_rises(bars_dir, fx_dir)
-    stored = read_bars("AAPL", root=bars_dir)
+    stored = read_bars("AAPL", root=bars_dir, as_of=LATEST)
     write_bars(stored.assign(close_eur=stored["close"] ** 2 / stored["close_eur"]), root=bars_dir)
 
     summary, _ = divergence("AAPL", bars_dir=bars_dir, fx_dir=fx_dir, companies=COMPANIES)
@@ -358,4 +361,6 @@ def test_the_cli_refreshes_close_eur_without_fetching(
 
     assert result.exit_code == 0, result.output
     assert "1 of 1 tickers converted" in result.output
-    assert read_bars("AAPL", root=bars_dir)["close_eur"].tolist() == pytest.approx([100.0, 100.0])
+    assert read_bars("AAPL", root=bars_dir, as_of=LATEST)["close_eur"].tolist() == pytest.approx(
+        [100.0, 100.0]
+    )

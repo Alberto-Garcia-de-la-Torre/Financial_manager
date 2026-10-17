@@ -3,7 +3,7 @@
     from finmgr.data.quarantine import apply_quarantine, read_quarantine
 
     apply_quarantine()                  # run the checks, quarantine the bad-data rows
-    read_quarantine("EQNR.OL")          # what is quarantined, and why
+    read_quarantine("EQNR.OL", as_of=LATEST)   # what is quarantined, and why
 
 A row the triage register (`config/quality_triage.csv`, day 19) calls
 `bad-data` gets two things:
@@ -47,7 +47,7 @@ import pyarrow.parquet as pq
 
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
-from finmgr.data import store
+from finmgr.data import pit, store
 from finmgr.data.quality import Flag, QualityReport, Verdict, run_checks
 
 #: Where the quarantine records live under `settings.data_dir`.
@@ -111,6 +111,7 @@ def empty_records() -> pd.DataFrame:
 def read_quarantine(
     tickers: Iterable[str] | str | None = None,
     *,
+    as_of: pit.AsOf,
     include_released: bool = False,
     settings: Settings | None = None,
     root: Path | str | None = None,
@@ -118,8 +119,10 @@ def read_quarantine(
     """Quarantine records, sorted by `(ticker, date, check)`.
 
     By default only the active ones — the rows :func:`~finmgr.data.store.read_bars`
-    is currently hiding. `include_released` adds the history.
+    is currently hiding. `include_released` adds the history. A record carries
+    the bar's prices, so like every read it stops at `as_of`, by bar date.
     """
+    cutoff = pit.resolve_as_of(as_of)
     if isinstance(tickers, str):
         tickers = [tickers]
     if tickers is None:
@@ -131,13 +134,15 @@ def read_quarantine(
     if not files:
         return empty_records()
 
-    sql = "SELECT * FROM read_parquet(?, hive_partitioning = true)"
+    sql = 'SELECT * FROM read_parquet(?, hive_partitioning = true) WHERE "date" <= ?'
     if not include_released:
-        sql += " WHERE released_at IS NULL"
+        sql += " AND released_at IS NULL"
     sql += ' ORDER BY "ticker", "date", "check"'
     with duckdb.connect() as con:
-        table = con.execute(sql, [[str(path) for path in files]]).to_arrow_table()
-    return table.select(list(QUARANTINE_COLUMNS)).cast(QUARANTINE_ARROW_SCHEMA).to_pandas()
+        bound = pit.bound_end(None, cutoff)
+        table = con.execute(sql, [[str(path) for path in files], bound]).to_arrow_table()
+    frame = table.select(list(QUARANTINE_COLUMNS)).cast(QUARANTINE_ARROW_SCHEMA).to_pandas()
+    return pit.guard(frame, cutoff, what="read_quarantine")
 
 
 def _write_records(path: Path, records: pd.DataFrame) -> None:
@@ -203,10 +208,16 @@ def apply_quarantine(
 
     results = []
     for ticker in report.tickers:
-        bars = store.read_bars(ticker, include_quarantined=True, settings=settings, root=root)
+        bars = store.read_bars(
+            ticker, as_of=pit.LATEST, include_quarantined=True, settings=settings, root=root
+        )
         path = record_path(ticker, settings=settings, root=quarantine_dir)
         records = read_quarantine(
-            ticker, include_released=True, settings=settings, root=quarantine_dir
+            ticker,
+            as_of=pit.LATEST,
+            include_released=True,
+            settings=settings,
+            root=quarantine_dir,
         )
         rows = bars.set_index("date")
         # A flag with no stored bar behind it — a missing session — has

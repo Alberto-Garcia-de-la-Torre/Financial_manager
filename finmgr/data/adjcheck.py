@@ -51,6 +51,7 @@ import pandas as pd
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import fetch as fetch_module
+from finmgr.data import pit
 from finmgr.data.actions import DIVIDEND, SPLIT, read_actions
 from finmgr.data.adjust import adjust_series, dividend_factors
 from finmgr.data.ingest import DEFAULT_ATTEMPTS, DEFAULT_PAUSE, Sleeper, fetch_with_retries
@@ -456,8 +457,10 @@ def compare_universe(
         company.ticker if isinstance(company, Company) else str(company).strip()
         for company in (load_universe(settings=resolved) if tickers is None else tickers)
     ]
-    bars = read_bars(symbols, settings=resolved)
-    actions = read_actions(symbols, settings=resolved)
+    # Up to today: this compares the whole stored history with Yahoo's, which
+    # is itself computed from everything Yahoo knows now.
+    bars = read_bars(symbols, as_of=pit.LATEST, settings=resolved)
+    actions = read_actions(symbols, as_of=pit.LATEST, settings=resolved)
     writes = _last_writes(resolved)
 
     results = []

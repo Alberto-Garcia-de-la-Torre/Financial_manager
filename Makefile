@@ -16,7 +16,7 @@ HOOKS := tools/pre-commit-config.yaml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install hooks hooks-all test lint fmt check clean
+.PHONY: help install hooks hooks-all test leak lint fmt check clean
 
 help: ## List the available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -40,6 +40,9 @@ hooks-all: $(STAMP) ## Run every hook over the whole tree, not just staged files
 
 test: $(STAMP) ## Run the test suite
 	$(BIN)/pytest
+
+leak: $(STAMP) ## Run the look-ahead leak test; after every change to finmgr/data/
+	$(BIN)/pytest -q tests/test_pit.py
 
 lint: $(STAMP) ## Check style and formatting without changing anything
 	$(BIN)/ruff check .

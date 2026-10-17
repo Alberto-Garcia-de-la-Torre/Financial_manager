@@ -2,8 +2,8 @@
 
     from finmgr.data.adjust import read_adjusted
 
-    read_adjusted("SAN.MC")        # ticker, date, close, split_factor,
-                                   # dividend_factor, adj_close
+    read_adjusted("SAN.MC", as_of="2024-06-28")   # ticker, date, close, split_factor,
+                                                  # dividend_factor, adj_close
 
 The store keeps raw closes (day 10) and the actions that happened to the share
 (day 15) as separate, unmodified facts. This module is the one place they are
@@ -48,6 +48,19 @@ split-adjusted closes are in.
 
 Everything here is pure: frames in, frames out, no network and no disk except
 :func:`read_adjusted`, which only reads.
+
+**Point in time.** Back-adjustment is look-ahead by construction: a dividend
+paid in March rescales every close before it. Computed over the whole store,
+the adjusted close of a January session would change the day a March dividend
+went ex — and a backtest standing in January would be using it.
+:func:`read_adjusted` therefore takes a required `as_of` and builds the factors
+from the bars and actions dated on or before it only, so the series is the one
+that could actually have been computed that evening (:mod:`finmgr.data.pit`).
+Returns are unaffected by where the series is anchored; the price *level* is
+not, which is why the anchor moves with `as_of`. One look-ahead remains that
+no `as_of` can undo: Yahoo's raw closes arrive already divided by every split
+up to the fetch date (see above), so a price *level* from before a split is in
+later shares. Use returns, not levels.
 """
 
 from __future__ import annotations
@@ -60,6 +73,7 @@ import numpy as np
 import pandas as pd
 
 from finmgr.config import Settings
+from finmgr.data import pit
 from finmgr.data.actions import DIVIDEND, SPLIT, read_actions
 from finmgr.data.store import read_bars
 
@@ -263,30 +277,36 @@ def read_adjusted(
     *,
     start: date | datetime | str | None = None,
     end: date | datetime | str | None = None,
+    as_of: pit.AsOf,
     settings: Settings | None = None,
     root: Path | str | None = None,
 ) -> pd.DataFrame:
     """Read bars and actions from the store and back-adjust them.
 
-    The factors are always computed over the whole stored history and only
-    then cut to `start`/`end`, so a window's adjusted closes are the same
-    numbers the full series has on those dates. `root` is the data directory
+    The factors are computed over the whole history *up to `as_of`* and only
+    then cut to `start`/`end`, so a window's adjusted closes are the numbers
+    the full series had on those dates as of that evening — and nothing dated
+    after `as_of`, bar or action, can reach them. `root` is the data directory
     (the parent of `bars/` and `actions/`), for tests.
     """
+    cutoff = pit.resolve_as_of(as_of)
+    first = pd.Timestamp(start).date() if start is not None else None
+    last = pit.bound_end(pd.Timestamp(end).date() if end is not None else None, cutoff, start=first)
     base = None if root is None else Path(root)
     bars = read_bars(
-        tickers, settings=settings, root=None if base is None else base / "bars" / "daily"
+        tickers,
+        as_of=cutoff,
+        settings=settings,
+        root=None if base is None else base / "bars" / "daily",
     )
     actions = read_actions(
         tickers if tickers is not None else None,
+        as_of=cutoff,
         settings=settings,
         root=None if base is None else base / "actions",
     )
     out = adjust(bars, actions)
-    first = pd.Timestamp(start).date() if start is not None else None
-    last = pd.Timestamp(end).date() if end is not None else None
     if first is not None:
         out = out[out["date"] >= first]
-    if last is not None:
-        out = out[out["date"] <= last]
-    return out.reset_index(drop=True)
+    out = out[out["date"] <= last]
+    return pit.guard(out.reset_index(drop=True), cutoff, what="read_adjusted")

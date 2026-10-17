@@ -43,7 +43,7 @@ from rich.table import Table
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
-from finmgr.data import adjcheck, calendars, quality, store
+from finmgr.data import adjcheck, calendars, pit, quality, store
 from finmgr.data import adjust as adjust_module
 from finmgr.data import fx as fx_module
 from finmgr.data import ingest as ingest_module
@@ -386,6 +386,11 @@ def adjusted(
         ),
     ] = None,
     rows: int = typer.Option(5, "--rows", help="Without --compare: sessions to print per ticker."),
+    as_of: str | None = typer.Option(
+        None,
+        "--as-of",
+        help="Without --compare: adjust with only what was known by this date (default: today).",
+    ),
 ) -> None:
     """Print our back-adjusted close, or check it against Yahoo's with --compare.
 
@@ -399,7 +404,11 @@ def adjusted(
     if not compare:
         if not ticker:
             raise typer.BadParameter("name at least one --ticker, or pass --compare")
-        frame = adjust_module.read_adjusted(ticker, settings=settings)
+        try:
+            point = store.as_date(as_of, "--as-of") or pit.LATEST
+            frame = adjust_module.read_adjusted(ticker, as_of=point, settings=settings)
+        except (ValueError, pit.LookAheadError) as exc:
+            raise typer.BadParameter(str(exc)) from exc
         if frame.empty:
             log.warning("finmgr adjusted: nothing stored for %s", ", ".join(ticker))
             raise typer.Exit(code=1)
@@ -540,9 +549,9 @@ def _show_actions(
     """Print stored actions; fail if there are none to print."""
     try:
         frame = actions_module.read_actions(
-            tickers or None, action=kind, start=start, end=end, settings=settings
+            tickers or None, action=kind, start=start, end=end, as_of=pit.LATEST, settings=settings
         )
-    except ValueError as exc:
+    except (ValueError, pit.LookAheadError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     if frame.empty:
         log.warning("finmgr actions --show: nothing stored for that selection")
@@ -620,7 +629,7 @@ def fx(
             results = fx_module.ingest_fx(pair or None, start=start, end=end, settings=settings)
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
-        stored = fx_module.read_fx(settings=settings)
+        stored = fx_module.read_fx(as_of=pit.LATEST, settings=settings)
         table = Table(title="EUR exchange rates")
         table.add_column("pair", style="bold")
         table.add_column("fetched", justify="right")
@@ -845,7 +854,9 @@ def quarantine(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    records = quarantine_module.read_quarantine([r.ticker for r in results], settings=settings)
+    records = quarantine_module.read_quarantine(
+        [r.ticker for r in results], as_of=pit.LATEST, settings=settings
+    )
     if not records.empty:
         table = Table(title="Quarantined rows")
         table.add_column("ticker", style="bold")

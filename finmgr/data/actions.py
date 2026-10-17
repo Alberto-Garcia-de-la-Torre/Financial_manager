@@ -3,7 +3,7 @@
     from finmgr.data.actions import ingest_actions, read_actions
 
     ingest_actions(["AAPL"])                        # fetch, merge into data/actions/
-    read_actions("AAPL", action="split")            # back out of the store
+    read_actions("AAPL", action="split", as_of=LATEST)  # back out of the store
 
 A bar says what a share traded at. An action says something happened *to* the
 share — it was cut into four, or it paid out €0.10 — and that is a different
@@ -62,6 +62,7 @@ import pyarrow.parquet as pq
 from finmgr import runlog
 from finmgr.config import Settings, load_settings
 from finmgr.data import fetch as fetch_module
+from finmgr.data import pit
 from finmgr.data.ingest import (
     DEFAULT_ABORT_AFTER,
     DEFAULT_ATTEMPTS,
@@ -302,7 +303,7 @@ def merge_actions(
     results = []
     for ticker, group in incoming.groupby("ticker", sort=True):
         symbol = str(ticker)
-        existing = read_actions(symbol, settings=settings, root=root)
+        existing = read_actions(symbol, as_of=pit.LATEST, settings=settings, root=root)
         joined = group.merge(
             existing, on=list(ACTION_KEY), how="left", suffixes=("", "_old"), indicator=True
         )
@@ -338,6 +339,7 @@ def read_actions(
     action: str | None = None,
     start: date | datetime | str | None = None,
     end: date | datetime | str | None = None,
+    as_of: pit.AsOf,
     settings: Settings | None = None,
     root: Path | str | None = None,
 ) -> pd.DataFrame:
@@ -346,7 +348,12 @@ def read_actions(
     `tickers` is one symbol, several, or None for everything stored; `action`
     narrows to `"split"` or `"dividend"`; `start` and `end` are inclusive.
     Always returns the full schema, empty when nothing matches.
+
+    `as_of` is required: an action is dated by its ex-date, and none after
+    `as_of` is returned — a split announced for next month must not adjust
+    this month's closes (:mod:`finmgr.data.pit`).
     """
+    cutoff = pit.resolve_as_of(as_of)
     if action is not None and action not in SOURCE_COLUMNS:
         raise ValueError(f"unknown action {action!r}; expected one of {sorted(SOURCE_COLUMNS)}")
     base = actions_root(settings=settings, root=root)
@@ -369,16 +376,15 @@ def read_actions(
     for clause, value in (
         ('"action" = ?', action),
         ('"date" >= ?', as_date(start, "start")),
-        ('"date" <= ?', as_date(end, "end")),
+        ('"date" <= ?', pit.bound_end(as_date(end, "end"), cutoff, start=as_date(start, "start"))),
     ):
         if value is not None:
             where.append(clause)
             params.append(value)
-    if where:
-        sql += " WHERE " + " AND ".join(where)
+    sql += " WHERE " + " AND ".join(where)
     with duckdb.connect() as con:
         table = con.execute(sql, params).to_arrow_table()
-    return conform_actions(table.to_pandas())
+    return pit.guard(conform_actions(table.to_pandas()), cutoff, what="read_actions")
 
 
 # ---------------------------------------------------------------------------

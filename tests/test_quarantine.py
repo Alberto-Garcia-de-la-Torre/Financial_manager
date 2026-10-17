@@ -1,7 +1,7 @@
 """Day 20: quarantine, never delete.
 
 The acceptance test is the first one: a row the register calls `bad-data` is
-gone from `read_bars()` and still on disk — in its bar partition, read with
+gone from `read_bars(as_of=LATEST)` and still on disk — in its bar partition, read with
 pyarrow straight off the file, and in `data/quarantine/` with its reason. The
 rest pin down what keeps that true: a merge or an EUR refresh rewriting the
 partition must not drop the row, a second run changes nothing, and taking the
@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from finmgr.cli import app
 from finmgr.config import SETTINGS_PATH_ENV
 from finmgr.data.calendars import expected_sessions
+from finmgr.data.pit import LATEST
 from finmgr.data.quarantine import apply_quarantine, read_quarantine, record_path
 from finmgr.data.store import merge_bars, partition_path, read_bars, write_bars
 
@@ -80,13 +81,13 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.usefixtures("project")
 def test_a_quarantined_row_is_absent_from_read_bars_but_still_on_disk() -> None:
-    assert BAD_DAY in set(read_bars("SAN.MC")["date"])  # before: an ordinary row
+    assert BAD_DAY in set(read_bars("SAN.MC", as_of=LATEST)["date"])  # before: an ordinary row
 
     (result,) = apply_quarantine(as_of=AS_OF)
     assert (result.quarantined, result.added) == (1, 1)
 
     # Absent from the default read...
-    read = read_bars("SAN.MC")
+    read = read_bars("SAN.MC", as_of=LATEST)
     assert BAD_DAY not in set(read["date"])
     assert len(read) == len(SESSIONS) - 1
 
@@ -108,7 +109,7 @@ def test_a_quarantined_row_is_absent_from_read_bars_but_still_on_disk() -> None:
     assert record["released_at"] is None
 
     # Asking for it explicitly gets it back.
-    every = read_bars("SAN.MC", include_quarantined=True)
+    every = read_bars("SAN.MC", include_quarantined=True, as_of=LATEST)
     assert every.loc[every["date"] == BAD_DAY, "quarantined"].tolist() == [True]
 
 
@@ -133,10 +134,10 @@ def test_a_merge_keeps_the_quarantined_row_and_its_flag() -> None:
     extra = later.iloc[[-1]].assign(date=D(2024, 4, 1))
     merge_bars(pd.concat([later, extra]))
 
-    every = read_bars("SAN.MC", include_quarantined=True)
+    every = read_bars("SAN.MC", include_quarantined=True, as_of=LATEST)
     assert len(every) == len(SESSIONS) + 1
     assert every.loc[every["date"] == BAD_DAY, "quarantined"].tolist() == [True]
-    assert BAD_DAY not in set(read_bars("SAN.MC")["date"])
+    assert BAD_DAY not in set(read_bars("SAN.MC", as_of=LATEST)["date"])
 
 
 @pytest.mark.usefixtures("project")
@@ -172,9 +173,9 @@ def test_removing_the_rule_releases_the_row_and_keeps_the_record(project: Path) 
     (result,) = apply_quarantine(as_of=AS_OF)
 
     assert (result.quarantined, result.released) == (0, 1)
-    assert BAD_DAY in set(read_bars("SAN.MC")["date"])
-    assert read_quarantine("SAN.MC").empty
-    (history,) = read_quarantine("SAN.MC", include_released=True).itertuples()
+    assert BAD_DAY in set(read_bars("SAN.MC", as_of=LATEST)["date"])
+    assert read_quarantine("SAN.MC", as_of=LATEST).empty
+    (history,) = read_quarantine("SAN.MC", include_released=True, as_of=LATEST).itertuples()
     assert history.reason == REASON and pd.notna(history.released_at)
 
 
@@ -182,7 +183,7 @@ def test_only_bad_data_verdicts_quarantine(project: Path) -> None:
     register(project)  # the flag is untriaged: `finmgr check` fails, nothing is hidden
     (result,) = apply_quarantine(as_of=AS_OF)
     assert result.quarantined == 0 and not record_path("SAN.MC").exists()
-    assert len(read_bars("SAN.MC")) == len(SESSIONS)
+    assert len(read_bars("SAN.MC", as_of=LATEST)) == len(SESSIONS)
 
 
 def test_a_partition_from_before_day_20_reads_as_unquarantined(tmp_path: Path) -> None:
@@ -191,7 +192,7 @@ def test_a_partition_from_before_day_20_reads_as_unquarantined(tmp_path: Path) -
     table = pq.read_table(path).drop(["quarantined"])
     pq.write_table(table, path)
 
-    read = read_bars("SAN.MC", root=tmp_path / "b")
+    read = read_bars("SAN.MC", root=tmp_path / "b", as_of=LATEST)
     assert len(read) == len(SESSIONS)
     assert not read["quarantined"].any() and read["quarantined"].dtype == "bool"
 
@@ -205,4 +206,4 @@ def test_the_cli_quarantines_and_lists() -> None:
     assert result.exit_code == 0, result.output
     assert "high_below_low" in result.output and REASON in result.output
     assert "1 row(s) quarantined" in result.output
-    assert BAD_DAY not in set(read_bars("SAN.MC")["date"])
+    assert BAD_DAY not in set(read_bars("SAN.MC", as_of=LATEST)["date"])

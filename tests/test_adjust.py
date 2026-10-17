@@ -30,6 +30,7 @@ from finmgr.data.adjust import (
     split_visibility,
 )
 from finmgr.data.fetch import to_bars
+from finmgr.data.pit import LATEST
 from finmgr.data.store import write_bars
 
 AAPL = "AAPL_2020-08-24_2020-09-04"
@@ -139,12 +140,12 @@ def test_read_adjusted_combines_the_two_stores(tmp_path: Path) -> None:
     write_bars(to_bars("SAN.MC", raw), root=tmp_path / "bars" / "daily")
     merge_actions(to_actions("SAN.MC", raw), root=tmp_path / "actions")
 
-    out = read_adjusted("SAN.MC", root=tmp_path).set_index("date")
+    out = read_adjusted("SAN.MC", root=tmp_path, as_of=LATEST).set_index("date")
 
     factor = 1 - 0.1 / out.loc[dt.date(2024, 10, 29), "close"]
     assert out.loc[dt.date(2024, 10, 28), "dividend_factor"] == pytest.approx(factor)
     assert out.loc[dt.date(2024, 10, 30), "dividend_factor"] == 1.0
-    assert len(read_adjusted("SAN.MC", start="2024-11-01", root=tmp_path)) == 7
+    assert len(read_adjusted("SAN.MC", start="2024-11-01", root=tmp_path, as_of=LATEST)) == 7
 
 
 # ---------------------------------------------------------------------------
