@@ -1,0 +1,5 @@
+ticker,name,exchange,currency,sector,country
+IWDA.AS,iShares Core MSCI World UCITS ETF (Acc),XAMS,EUR,Benchmark,World
+SPY,SPDR S&P 500 ETF Trust,XNYS,USD,Benchmark,United States
+EXSA.DE,iShares STOXX Europe 600 UCITS ETF (DE),XETR,EUR,Benchmark,Europe
+LYXIB.MC,Amundi IBEX 35 UCITS ETF (Dist),XMAD,EUR,Benchmark,Spain

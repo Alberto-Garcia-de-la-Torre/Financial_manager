@@ -50,6 +50,14 @@ class Settings(BaseModel):
         default=Path("config/universe.csv"),
         description="CSV listing the companies the project tracks.",
     )
+    benchmarks_path: Path = Field(
+        default=Path("config/benchmarks.csv"),
+        description="CSV listing the benchmark ETFs, in the universe file's columns.",
+    )
+    benchmark: str = Field(
+        default="IWDA.AS",
+        description="The benchmark the 100 are measured against; a ticker in benchmarks_path.",
+    )
     log_dir: Path = Field(
         default=Path("logs"),
         description="Where the rotating run log is written. Never committed to git.",
@@ -67,7 +75,7 @@ class Settings(BaseModel):
         description="Earliest date the backfill asks for.",
     )
 
-    @field_validator("data_dir", "universe_path", "log_dir")
+    @field_validator("data_dir", "universe_path", "benchmarks_path", "log_dir")
     @classmethod
     def _absolute(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()

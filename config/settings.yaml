@@ -13,6 +13,15 @@ data_dir: data
 # The 100 companies, written on day 7.
 universe_path: config/universe.csv
 
+# The benchmarks (day 22): SPY, MSCI World, STOXX 600 and an IBEX 35 ETF, in
+# the universe file's columns. Stored apart from the 100, under data/benchmarks/.
+benchmarks_path: config/benchmarks.csv
+
+# The one the 100 are measured against. MSCI World, because the universe is
+# global and counted in EUR; IWDA.AS is accumulating, so its price is already
+# a total return.
+benchmark: IWDA.AS
+
 # Rotating run log. Every invocation stamps its run_id on every line here.
 log_dir: logs
 

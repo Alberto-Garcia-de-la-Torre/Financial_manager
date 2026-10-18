@@ -31,9 +31,11 @@ import finmgr.data
 from finmgr.data import pit
 from finmgr.data.actions import merge_actions, read_actions
 from finmgr.data.adjust import adjust, read_adjusted
+from finmgr.data.benchmarks import read_benchmarks, read_total_return
 from finmgr.data.fx import merge_fx, read_fx
 from finmgr.data.pit import LATEST, LookAheadError
 from finmgr.data.quarantine import _write_records, read_quarantine, record_path
+from finmgr.data.rates import merge_rates, read_rates
 from finmgr.data.store import read_bars, write_bars
 
 D = dt.date
@@ -102,6 +104,13 @@ def data(tmp_path: Path) -> Path:
     _write_records(
         record_path("SAN.MC", root=tmp_path / "quarantine"), records([PAST[1], FUTURE[1]])
     )
+    merge_rates(
+        pd.DataFrame({"series": "ESTR", "date": SESSIONS, "rate": 3.9}), root=tmp_path / "rates"
+    )
+    write_bars(bars(), root=tmp_path / "benchmarks" / "bars" / "daily")
+    merge_actions(
+        actions([PAST_DIVIDEND, FUTURE_DIVIDEND]), root=tmp_path / "benchmarks" / "actions"
+    )
     return tmp_path
 
 
@@ -112,6 +121,9 @@ READERS: list[tuple[str, Callable[..., pd.DataFrame]]] = [
     ("read_fx", lambda d, **kw: read_fx("EURUSD", root=d / "fx", **kw)),
     ("read_adjusted", lambda d, **kw: read_adjusted("SAN.MC", root=d, **kw)),
     ("read_quarantine", lambda d, **kw: read_quarantine("SAN.MC", root=d / "quarantine", **kw)),
+    ("read_rates", lambda d, **kw: read_rates("ESTR", root=d / "rates", **kw)),
+    ("read_total_return", lambda d, **kw: read_total_return("SAN.MC", root=d, **kw)),
+    ("read_benchmarks", lambda d, **kw: read_benchmarks("SAN.MC", root=d / "benchmarks", **kw)),
 ]
 #: The readers that take a `start`/`end` window.
 WINDOWED = [reader for reader in READERS if reader[0] != "read_quarantine"]

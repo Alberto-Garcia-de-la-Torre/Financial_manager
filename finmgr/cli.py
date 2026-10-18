@@ -18,7 +18,10 @@ shows one ticker's local and EUR series diverging as FX says they must.
 `check` (day 19) runs the data quality checks and fails on any flag not yet
 triaged in `config/quality_triage.csv`, and `quarantine` (day 20) hides every
 row that register calls bad-data from reads — flagged in the store, recorded
-with its reason in `data/quarantine/`, never deleted. Each stub prints what it will do and
+with its reason in `data/quarantine/`, never deleted. `benchmarks` (day 22)
+ingests SPY, MSCI World, STOXX 600 and IBEX 35 ETFs into `data/benchmarks/`
+and the euro overnight rate into `data/rates/`; `benchmarks --plot` draws all
+100 against the benchmark on one chart. Each stub prints what it will do and
 exits non-zero, so nothing downstream can mistake "not written yet" for "ran
 successfully".
 
@@ -45,10 +48,12 @@ from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
 from finmgr.data import adjcheck, calendars, pit, quality, store
 from finmgr.data import adjust as adjust_module
+from finmgr.data import benchmarks as benchmarks_module
 from finmgr.data import fx as fx_module
 from finmgr.data import ingest as ingest_module
 from finmgr.data import manifest as manifest_module
 from finmgr.data import quarantine as quarantine_module
+from finmgr.data import rates as rates_module
 from finmgr.data import universe as universe_module
 
 app = typer.Typer(
@@ -876,6 +881,151 @@ def quarantine(
         f"+{sum(r.added for r in results)} added, {sum(r.released for r in results)} released, "
         f"{sum(r.path is not None for r in results)} partition(s) rewritten"
     )
+
+
+@app.command()
+def benchmarks(
+    ticker: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            "-t",
+            help="Only this benchmark; repeatable (default: every one in benchmarks.csv).",
+            metavar="SYMBOL",
+        ),
+    ] = None,
+    start: str = typer.Option(
+        None, "--start", help="First date (default: history_start from settings)."
+    ),
+    end: str = typer.Option(None, "--end", help="Last date, inclusive (default: today)."),
+    no_fetch: bool = typer.Option(
+        False, "--no-fetch", help="Download nothing; with --plot, just draw from the store."
+    ),
+    plot: Annotated[
+        Path | None,
+        typer.Option(
+            "--plot",
+            help="Draw the cumulative return of all 100 against the benchmark to this PNG.",
+            metavar="PATH",
+        ),
+    ] = None,
+    against: str = typer.Option(
+        None, "--against", help="With --plot: the benchmark to use (default: from settings)."
+    ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="With --plot: read nothing dated after this (default: today)."
+    ),
+) -> None:
+    """Ingest the benchmark ETFs and the euro short rate; plot the 100 against them.
+
+    Fetches bars and actions for every ETF in config/benchmarks.csv into
+    data/benchmarks/, writes their close_eur from the stored FX (run `finmgr fx`
+    first), and ingests €STR and EONIA from the ECB into data/rates/. Exits
+    non-zero if anything failed.
+
+    With --plot, also draws every stock's total return in EUR against the
+    benchmark, the equal-weighted 100 and cash, and prints the headline
+    numbers — Sharpe ratios over the euro overnight rate.
+    """
+    settings = load_settings()
+    failed: list[str] = []
+    if not no_fetch:
+        try:
+            ingested = benchmarks_module.ingest_benchmarks(
+                ticker or None, start=start, end=end, settings=settings
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        stored = benchmarks_module.read_benchmarks(as_of=pit.LATEST, settings=settings)
+        table = Table(title="Benchmarks")
+        table.add_column("ticker", style="bold")
+        table.add_column("status")
+        table.add_column("new", justify="right")
+        table.add_column("from")
+        table.add_column("to")
+        table.add_column("in EUR", justify="right")
+        table.add_column("detail", overflow="fold")
+        for result in ingested.bars.results:
+            held = stored.loc[stored["ticker"] == result.ticker]
+            table.add_row(
+                result.ticker,
+                str(result.status),
+                str(result.added),
+                str(held["date"].iloc[0]) if len(held) else "-",
+                str(held["date"].iloc[-1]) if len(held) else "-",
+                str(int(held["adj_close_eur"].notna().sum())),
+                result.detail,
+            )
+        console.print(table)
+        for c in ingested.conversions:
+            if c.error:
+                console.print(f"[red]{c.ticker}: {c.error}[/red]")
+        failed += ingested.failed
+
+        for result in rates_module.ingest_rates(start=start, end=end, settings=settings):
+            held = rates_module.read_rates(result.series, as_of=pit.LATEST, settings=settings)
+            if result.error:
+                console.print(f"[red]{result.series}: {result.error}[/red]")
+                failed.append(result.series)
+            elif len(held):
+                console.print(
+                    f"{result.series}: {len(held)} rates stored, {held['date'].iloc[0]} to "
+                    f"{held['date'].iloc[-1]}, last {held['rate'].iloc[-1]:.3f}% "
+                    f"({result.added} new)"
+                )
+
+    if plot is not None:
+        _plot_against_benchmark(settings, plot, start=start, end=end, against=against, as_of=as_of)
+    if failed:
+        log.warning("finmgr benchmarks: failed for %s", ", ".join(sorted(set(failed))))
+        raise typer.Exit(code=1)
+
+
+def _plot_against_benchmark(
+    settings: Settings,
+    path: Path,
+    *,
+    start: str | None,
+    end: str | None,
+    against: str | None,
+    as_of: str | None,
+) -> None:
+    """Draw the 100 against the benchmark and print the headline numbers."""
+    try:
+        comparison = benchmarks_module.compare(
+            start=start,
+            end=end,
+            as_of=as_of or pit.LATEST,
+            benchmark=against,
+            settings=settings,
+        )
+    except ValueError as exc:
+        log.warning("finmgr benchmarks --plot: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    names = {c.ticker: c.name for c in benchmarks_module.load_benchmarks(settings=settings)}
+    table = Table(title=f"{comparison.start} to {comparison.end}, total return in EUR")
+    table.add_column("series", style="bold")
+    table.add_column("total", justify="right")
+    table.add_column("a year", justify="right")
+    table.add_column("volatility", justify="right")
+    table.add_column("Sharpe", justify="right")
+    for row in benchmarks_module.summarise(comparison):
+        table.add_row(
+            names.get(row.name, row.name),
+            f"{row.total_return:+.1%}",
+            f"{row.cagr:+.2%}",
+            f"{row.volatility:.1%}",
+            "-" if row.sharpe != row.sharpe else f"{row.sharpe:.2f}",
+        )
+    console.print(table)
+    beat = comparison.outperformers()
+    console.print(
+        f"{int(beat.sum())} of {len(beat)} stocks beat {comparison.benchmark} "
+        "from their own first session in the window"
+    )
+    written = benchmarks_module.plot_comparison(comparison, path, names=names)
+    console.print(f"wrote {written}")
 
 
 @app.command()

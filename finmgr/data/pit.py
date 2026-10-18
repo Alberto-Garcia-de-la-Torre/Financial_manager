@@ -14,8 +14,11 @@ next session. So the guard is not left to each caller:
 
 * Every read function in the data layer — :func:`~finmgr.data.store.read_bars`,
   :func:`~finmgr.data.actions.read_actions`, :func:`~finmgr.data.fx.read_fx`,
-  :func:`~finmgr.data.adjust.read_adjusted` and
-  :func:`~finmgr.data.quarantine.read_quarantine` — takes `as_of` as a
+  :func:`~finmgr.data.adjust.read_adjusted`,
+  :func:`~finmgr.data.quarantine.read_quarantine`, and from day 22
+  :func:`~finmgr.data.rates.read_rates`,
+  :func:`~finmgr.data.benchmarks.read_total_return` and
+  :func:`~finmgr.data.benchmarks.read_benchmarks` — takes `as_of` as a
   *required* keyword. There is no default, because a default is exactly the
   forgotten argument this exists to catch. A caller that genuinely wants
   everything on disk says so with :data:`LATEST`.

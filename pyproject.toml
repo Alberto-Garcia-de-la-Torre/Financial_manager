@@ -31,6 +31,9 @@ dependencies = [
     "matplotlib==3.11.2",
     "pytest==9.1.1",
     "exchange_calendars==4.13.2",
+    # The ECB data portal, for the risk-free rate (day 22). Already present
+    # through yfinance; pinned here because finmgr imports it directly.
+    "requests==2.34.2",
 ]
 
 [project.optional-dependencies]

@@ -709,7 +709,8 @@ bar is caught by two checks).
 ### Point in time: every read takes `as_of`
 
 Every read function in the data layer (`read_bars`, `read_actions`, `read_fx`,
-`read_adjusted`, `read_quarantine`) takes a required `as_of` and never returns
+`read_adjusted`, `read_quarantine`, and from day 22 `read_rates`,
+`read_total_return` and `read_benchmarks`) takes a required `as_of` and never returns
 a row dated after it. There is no default: a forgotten bound is how look-ahead
 gets in, so "everything up to today" has to be asked for by name, as
 `as_of=LATEST`. The date bound goes into the query. Then `finmgr.data.pit.guard`
@@ -768,6 +769,53 @@ dollar, so a +11.5% year in USD was −1.8% in EUR. Over June 2021 to September
 daily FX close is a London-evening snapshot rather than each exchange's
 closing auction, so `close_eur` is correct to the day but not to the minute.
 
+### Benchmarks and the risk-free rate
+
+Without a benchmark there is no way to tell a 12% year of skill from a 12%
+year of market. `config/benchmarks.csv` lists four ETFs, in the universe
+file's columns:
+
+| ticker | what | venue, currency |
+|---|---|---|
+| IWDA.AS | iShares Core MSCI World (Acc) — **the** benchmark (`benchmark` in settings) | Amsterdam, EUR |
+| SPY | SPDR S&P 500 | New York, USD |
+| EXSA.DE | iShares STOXX Europe 600 | Xetra, EUR |
+| LYXIB.MC | Amundi IBEX 35 (Dist) — the IBEX proxy | Madrid, EUR |
+
+They are ETFs rather than indices because `^IBEX` and friends are price
+indices: they drop the dividends (about 4% a year for the IBEX), and the 100
+are measured on total return. MSCI World is the default because the universe
+is global. The ETFs go through the universe's own ingest, actions and EUR
+code, into a separate data directory (`data/benchmarks/bars/daily/`,
+`data/benchmarks/actions/`), so `check`, `quarantine` and the cross-section
+never mistake SPY for a 101st company.
+
+The risk-free rate is the euro overnight rate from the ECB data portal, in
+`data/rates/series=ESTR/` and `series=EONIA/`, in percent a year. €STR is used
+from October 2019, when it starts, and EONIA before that. Cash accrues ACT/360
+at the rate of the session *before*, so a Friday rate earns three days and no
+return ever uses a rate fixed after it started. The ECB is fetched with
+`requests`; the system CA store on this machine does not verify its
+certificate.
+
+```bash
+finmgr fx                                   # first: the benchmarks' close_eur needs the rates
+finmgr benchmarks                           # ETFs + €STR/EONIA
+finmgr benchmarks --no-fetch --plot logs/vs_benchmark.png [--start 2015-01-01] [--as-of DATE]
+```
+
+`--plot` draws the acceptance chart for day 22: every one of the 100 as growth
+of €1 (total return, dividends reinvested, in EUR) with the benchmark, the
+equal-weighted 100 and cash on top, on a log scale. All of them share one
+calendar, and each series is carried forward over its market's holidays. A
+stock that lists inside the window starts at 1 on its own first day, and is
+judged against what the benchmark did from that day. The command also prints
+total return, CAGR, volatility and a Sharpe ratio over the euro overnight
+rate. For 2010-01-04 to 2026-10-16: MSCI World returned +12.4% a year in EUR
+(Sharpe 0.80), the equal-weighted 100 +17.6% (1.11), and cash +0.6%. 49 of
+the 100 beat the benchmark. The equal-weight's lead is mostly **survivorship
+bias**: these are today's 100 companies, so the losers are missing.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -796,6 +844,9 @@ builds and checks the adjusted close (day 16, see "Adjusted close" above).
 `finmgr sessions` (day 17) lists the sessions missing against each venue's
 exchange calendar (see "Exchange calendars" above). `finmgr fx` (day 18)
 ingests the EUR crosses and writes `close_eur` (see "One currency" above).
+`finmgr benchmarks` (day 22) ingests the benchmark ETFs and the euro short
+rate, and `--plot` draws the 100 against the benchmark (see "Benchmarks and
+the risk-free rate" above).
 
 `--log-level` is a global option, so it goes before the subcommand:
 
