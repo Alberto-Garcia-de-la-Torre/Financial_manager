@@ -816,6 +816,28 @@ rate. For 2010-01-04 to 2026-10-16: MSCI World returned +12.4% a year in EUR
 the 100 beat the benchmark. The equal-weight's lead is mostly **survivorship
 bias**: these are today's 100 companies, so the losers are missing.
 
+## Features
+
+### Returns
+
+`finmgr.features.returns` is what every later feature is built on: simple
+(`ret_{h}d`) and log (`logret_{h}d`) returns over 1, 5, 21, 63, 126 and 252
+sessions, from `adj_close_eur` (total return in EUR) by default.
+
+```python
+from finmgr.features.returns import read_returns
+panel = read_returns(as_of="2024-06-28", start="2024-01-01")   # all 100, every horizon
+```
+
+The value on date t is `p[t] / p[t-h] - 1`: today's price and the one h
+sessions back, nothing later. A session is one the ticker's venue held (day
+17's calendars), not the previous row, so a missing or quarantined bar does not
+stretch a 5-session window to six; it only makes NaN the returns that end or
+start on it. Returns dated t come out the same whether the store is read as of
+t or as of today, because a later split rescales both ends of the window.
+`tests/test_returns.py` holds the acceptance test: scramble every price after t
+and `ret_5d` at t does not move.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
