@@ -44,6 +44,13 @@ dev = [
     "ruff==0.16.8",
     "pre-commit==4.6.2",
 ]
+# Runs the hand-check notebooks under notebooks/ headless (`make notebooks`).
+# Kept out of the runtime deps: the pipeline never imports them.
+notebooks = [
+    "nbformat==5.11.1",
+    "nbclient==0.11.0",
+    "ipykernel==7.4.0",
+]
 
 [project.scripts]
 finmgr = "finmgr.cli:run"

@@ -16,7 +16,7 @@ HOOKS := tools/pre-commit-config.yaml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install hooks hooks-all test leak lint fmt check clean
+.PHONY: help install hooks hooks-all test leak lint fmt check notebooks clean
 
 help: ## List the available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -53,6 +53,15 @@ fmt: $(STAMP) ## Reformat and apply the safe lint fixes
 	$(BIN)/ruff check --fix .
 
 check: lint test ## What CI would run: lint, then tests
+
+NB_STAMP := $(VENV)/.notebooks-stamp
+
+$(NB_STAMP): pyproject.toml | $(STAMP)
+	$(BIN)/pip install --quiet --editable ".[dev,notebooks]"
+	@touch $(NB_STAMP)
+
+notebooks: $(NB_STAMP) ## Execute the hand-check notebooks in place; needs the local data store
+	$(BIN)/python tools/run_notebooks.py
 
 clean: ## Remove caches and build artefacts (leaves .venv and data/ alone)
 	rm -rf .pytest_cache .ruff_cache build dist

@@ -838,6 +838,33 @@ t or as of today, because a later split rescales both ends of the window.
 `tests/test_returns.py` holds the acceptance test: scramble every price after t
 and `ret_5d` at t does not move.
 
+### Momentum
+
+`finmgr.features.momentum` adds three columns, counted in venue sessions like
+the returns:
+
+| column     | definition               | reads as                                 |
+|------------|--------------------------|------------------------------------------|
+| `mom_12_1` | `p[t-21] / p[t-252] - 1` | the last year, the last month left out   |
+| `mom_6_1`  | `p[t-21] / p[t-126] - 1` | the last half year, the last month left out |
+| `rev_5d`   | `-(p[t] / p[t-5] - 1)`   | last week's return, sign flipped         |
+
+```python
+from finmgr.features.momentum import read_momentum
+panel = read_momentum(as_of="2024-06-28", start="2024-01-01")
+```
+
+The last month is skipped because it tends to reverse, and including it
+dilutes the 3–12 month effect. That month belongs to the short-term reversal
+instead. `rev_5d` is negated so that, like the other two columns, higher values
+are on the side the effect favours (last week's losers). The acceptance check
+is `notebooks/day24_momentum.ipynb`: NVDA's 12-1 counted by hand from the
+stored bars, after checking against `exchange_calendars` that those bars are
+exactly XNAS's sessions. It equals `read_momentum` to the last bit, at the pinned date
+and at every month-end of the year before it. Run it with `make notebooks`, which
+installs the `notebooks` extra (nbclient, ipykernel) and needs the local
+store. The synthetic tests are in `tests/test_momentum.py`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six

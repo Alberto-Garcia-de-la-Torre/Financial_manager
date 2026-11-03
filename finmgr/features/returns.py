@@ -88,10 +88,13 @@ def _check_horizons(horizons: Sequence[int]) -> tuple[int, ...]:
     return out
 
 
-def _one_ticker(
-    frame: pd.DataFrame, price: str, horizons: tuple[int, ...], grid: Sequence[date] | None
-) -> pd.DataFrame:
-    """Returns for one ticker's rows, sorted by date, optionally on a session grid."""
+def session_prices(frame: pd.DataFrame, price: str, grid: Sequence[date] | None) -> pd.Series:
+    """One ticker's `price` indexed by date, laid on its session `grid` if given.
+
+    A session with no stored bar becomes NaN, so a positional `shift(h)` is
+    exactly h sessions. A non-positive price is NaN too. Shared with every
+    feature that counts sessions (momentum, day 24, onwards).
+    """
     prices = frame.set_index("date")[price].astype(float)
     if grid is not None:
         # The stored dates are always on the grid: a bar the calendar did not
@@ -100,7 +103,14 @@ def _one_ticker(
         prices = prices.reindex(index)
     # A non-positive adjusted price is bad data, not a -100% return; and log
     # of it is undefined. Either way the windows touching it are NaN.
-    prices = prices.where(prices > 0)
+    return prices.where(prices > 0)
+
+
+def _one_ticker(
+    frame: pd.DataFrame, price: str, horizons: tuple[int, ...], grid: Sequence[date] | None
+) -> pd.DataFrame:
+    """Returns for one ticker's rows, sorted by date, optionally on a session grid."""
+    prices = session_prices(frame, price, grid)
     logs = np.log(prices)
     out = {}
     for h in horizons:
@@ -163,6 +173,18 @@ def _venues(settings: Settings) -> dict[str, str]:
     return venues
 
 
+def ticker_sessions(prices: pd.DataFrame, settings: Settings) -> dict[str, list[date]]:
+    """`{ticker: its venue's sessions from its first stored bar to its last}`."""
+    venues = _venues(settings)
+    sessions = {}
+    for ticker, frame in prices.groupby("ticker", sort=False):
+        if ticker in venues:
+            sessions[ticker] = venue_sessions(
+                venues[ticker], frame["date"].min(), frame["date"].max()
+            )
+    return sessions
+
+
 def read_returns(
     tickers: Iterable[str] | str | None = None,
     *,
@@ -190,13 +212,7 @@ def read_returns(
     # Two calendar days per session covers weekends and every holiday season.
     read_from = None if first is None else first - timedelta(days=2 * max(horizons) + 14)
     prices = read_total_return(tickers, start=read_from, as_of=cutoff, settings=resolved, root=root)
-    venues = _venues(resolved)
-    sessions = {}
-    for ticker, frame in prices.groupby("ticker", sort=False):
-        if ticker in venues:
-            sessions[ticker] = venue_sessions(
-                venues[ticker], frame["date"].min(), frame["date"].max()
-            )
+    sessions = ticker_sessions(prices, resolved)
     out = compute_returns(prices, price=price, horizons=horizons, sessions=sessions)
     if first is not None:
         out = out[out["date"] >= first].reset_index(drop=True)
