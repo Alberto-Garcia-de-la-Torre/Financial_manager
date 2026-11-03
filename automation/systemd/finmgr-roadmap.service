@@ -33,9 +33,10 @@ Environment=HOME=%h
 # So notify-send can reach the desktop session.
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 
-# A step gets an hour by default (STEP_TIMEOUT); give the unit headroom
-# on top for git, tests and the tracker sync.
-TimeoutStartSec=5400
+# A run does up to three steps (COMMITS_PER_RUN), each allowed an hour
+# (STEP_TIMEOUT); give the unit headroom on top for git, tests and the
+# tracker sync.
+TimeoutStartSec=12600
 
 # One retry, half an hour later, for a transient network or API failure.
 # A genuine step failure is recorded and not retried - it needs a human, and

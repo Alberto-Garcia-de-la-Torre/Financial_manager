@@ -1,8 +1,9 @@
 # Sixty Sessions — the daily runner
 
-Every evening at a fixed time this picks the next unfinished step out of
-`ROADMAP.md`, hands it to Claude Code in headless mode, checks the result,
-and commits it. Sixty days, sixty commits, no supervision required.
+Every evening at a fixed time this picks 1, 2 or 3 of the next unfinished
+steps out of `ROADMAP.md` (at random, see `COMMITS_PER_RUN`), hands each to
+Claude Code in headless mode, checks the result, and commits it - one commit
+per step. Sixty steps, sixty commits, no supervision required.
 
 ```
 automation/
@@ -27,7 +28,8 @@ lingering (so it fires when you're logged out), and runs a preflight.
 ```bash
 automation/roadmap_runner.py status          # progress and what's next
 automation/roadmap_runner.py run --dry-run   # see tonight's prompt, change nothing
-automation/roadmap_runner.py run             # run the next step now
+automation/roadmap_runner.py run             # run the next 1-3 steps now
+automation/roadmap_runner.py run --count 2   # exactly two steps this run
 automation/roadmap_runner.py run --day 12    # run a specific step
 automation/roadmap_runner.py preflight       # check the setup
 automation/roadmap_runner.py resync          # rebuild state from git history
@@ -39,6 +41,9 @@ journalctl --user -u finmgr-roadmap -f       # watch it work
 ```
 
 ## What one run actually does
+
+The run first picks how many steps to do (1, 2 or 3), then repeats the
+steps below for each one, stopping at the first failure.
 
 1. **Takes a lock.** Two runs can never overlap.
 2. **Refuses to start on a dirty tree.** If you have uncommitted work, the
@@ -91,6 +96,7 @@ All in `config.env`:
 | `AGENT_CMD` | Claude Code | The whole agent, as one command line. See below. |
 | `MODEL` | `opus` | Substituted into `AGENT_CMD` as `{model}`. |
 | `STEP_TIMEOUT` | `3600` | Seconds for one step. |
+| `COMMITS_PER_RUN` | `1,2,3` | Each run picks one at random: that many steps, one commit each. |
 | `BRANCH_MODE` | `branch` | `branch` = one branch per day (reviewable). `main` = commit straight to main. |
 | `PUSH` | `1` | Push after committing. |
 | `OPEN_PR` | `0` | Needs a working `gh auth status`. |
@@ -143,8 +149,8 @@ lingering is on. `install.sh` enables it; check with
 `loginctl show-user $USER -p Linger`.
 
 **Missed runs.** `Persistent=true`, so a laptop that was closed at 19:30
-runs the step when it next wakes. It won't try to catch up on several days
-at once — one step per day, by design.
+runs the step when it next wakes. It won't try to catch up on missed days —
+one run per day, 1-3 steps per run, by design.
 
 **Push credentials.** `gh auth status` and `git push` use different
 credentials. Preflight probes the one that matters by doing a `--dry-run`

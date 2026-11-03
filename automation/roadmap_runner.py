@@ -22,6 +22,7 @@ import argparse
 import fcntl
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -60,6 +61,7 @@ DEFAULTS = {
     "OPEN_PR": "0",
     "NOTIFY": "1",
     "ARTIFACT_URL": "",
+    "COMMITS_PER_RUN": "1,2,3",
 }
 
 
@@ -733,14 +735,62 @@ def cmd_run(cfg, args):
             info(f"a step already ran today ({today}) - skipping")
             return 0
 
-    prompt = build_prompt(step, cfg, steps, state)
+    # How many steps - and so how many commits - this run makes. A specific
+    # --day is always exactly one.
+    count = 1 if args.day else choose_count(cfg, args)
+    batch = [step]
+    if count > 1:
+        done = completed_days(state)
+        batch += [s for s in steps if s.n not in done and s.n != step.n][:count - 1]
+    if len(batch) < count:
+        info(f"only {len(batch)} step(s) left - running those")
+    info(f"this run: {len(batch)} commit(s) - days "
+         + ", ".join(f"{s.n:02d}" for s in batch))
 
     if args.dry_run:
-        info(f"--- would run day {step.n}: {step.title} ---")
-        info(f"branch: {step.branch}")
+        for s in batch:
+            info(f"--- would run day {s.n}: {s.title}  (branch {s.branch}) ---")
         info("")
-        info(prompt)
+        info(build_prompt(step, cfg, steps, state))
         return 0
+
+    # systemd stops the unit with SIGTERM (shutdown, timeout). Python's default
+    # handler dies on the spot, skipping the rescue in run_step and stranding
+    # the repo on the day branch. Turn it into an exception the rescue catches.
+    def _on_sigterm(signum, frame):
+        raise SystemExit(f"killed by signal {signum}")
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    for i, s in enumerate(batch, 1):
+        info(f"[{i}/{len(batch)}]")
+        rc = run_step(cfg, repo, steps, state, s)
+        if rc != 0:
+            # Later steps build on earlier ones; never run past a failure.
+            if i < len(batch):
+                warn(f"stopping after day {s.n} - {len(batch) - i} step(s) not attempted")
+            return rc
+    return 0
+
+
+def choose_count(cfg: dict, args) -> int:
+    """Pick how many steps this run implements: --count, else random from COMMITS_PER_RUN."""
+    if args.count:
+        return args.count
+    raw = str(cfg.get("COMMITS_PER_RUN", "1,2,3"))
+    try:
+        choices = [int(c) for c in raw.split(",") if c.strip()]
+    except ValueError:
+        choices = []
+    choices = [c for c in choices if c >= 1]
+    if not choices:
+        warn(f"COMMITS_PER_RUN={raw!r} is not a list of positive integers - using 1")
+        return 1
+    return random.choice(choices)
+
+
+def run_step(cfg, repo: Path, steps: list, state: dict, step) -> int:
+    """Implement, verify, commit and land one step. Returns an exit code."""
+    prompt = build_prompt(step, cfg, steps, state)
 
     return_to_base(cfg, repo)
     problems = preflight(cfg, strict=True)
@@ -763,13 +813,6 @@ def cmd_run(cfg, args):
         return 1
 
     info(f"Day {step.n:02d} - {step.title}")
-
-    # systemd stops the unit with SIGTERM (shutdown, timeout). Python's default
-    # handler dies on the spot, skipping the rescue below and stranding the
-    # repo on the day branch. Turn it into an exception the rescue can catch.
-    def _on_sigterm(signum, frame):
-        raise SystemExit(f"killed by signal {signum}")
-    signal.signal(signal.SIGTERM, _on_sigterm)
 
     # Start from a current base branch.
     git(repo, "fetch", "origin", "--quiet", check=False)
@@ -986,6 +1029,8 @@ def main():
     r.add_argument("--day", type=int, help="run a specific day instead of the next")
     r.add_argument("--dry-run", action="store_true", help="print the prompt and stop")
     r.add_argument("--force", action="store_true", help="run even if one already ran today")
+    r.add_argument("--count", type=int, choices=(1, 2, 3),
+                   help="steps (commits) to do this run instead of a random pick")
 
     args = p.parse_args()
     cfg = load_config()
