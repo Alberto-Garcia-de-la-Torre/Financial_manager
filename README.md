@@ -924,6 +924,39 @@ get smoother as the window grows, that they stay close to the price with no
 jumps, and that every cross falls on the bar where the 50 and 200 lines change
 sides. The synthetic tests are in `tests/test_trend.py`.
 
+### Oscillators
+
+`finmgr.features.oscillators` adds four classic oscillators. They are written by hand,
+not taken from a library, so their exact meaning is documented in the module docstring:
+
+| column                          | definition                                                     |
+|---------------------------------|----------------------------------------------------------------|
+| `rsi_14`                        | Wilder's RSI: `100 * avgUp / (avgUp + avgDown)`, 0..100           |
+| `macd`, `macd_signal`, `macd_hist` | EMA12 − EMA26, its EMA9, and their difference, in price units |
+| `macd_pct`, `macd_signal_pct`, `macd_hist_pct` | the same divided by the close: the model's columns |
+| `stoch_k`, `stoch_d`            | close within the 14-session high-low range (0..100), and its 3-SMA |
+| `bb_pctb`                       | Bollinger %B(20,2): 0 at the lower band, 1 at the upper; = 0.5 + z/4 |
+
+```python
+from finmgr.features.oscillators import read_oscillators
+panel = read_oscillators(as_of="2024-06-28", start="2024-01-01")
+```
+
+These are chart indicators, so they run on the listing-currency adjusted bar
+(`adj_close`, with highs and lows adjusted by the same factor), not on the euro series.
+**Reference check.** `tests/test_oscillators.py` checks each oscillator on small examples
+worked out by hand. It also compares against TA-Lib's output on a 400-bar synthetic
+series, frozen in `tests/fixtures/oscillators/talib_reference.csv`. TA-Lib is not a
+dependency, so to regenerate that file run `tools/oscillator_reference.py` in any
+environment that has `ta-lib` installed. RSI, the stochastic and %B agree with TA-Lib
+to about 1e-9. MACD agrees to 1e-4 once TA-Lib's different seeding of the fast EMA has
+decayed (after about 120 bars).
+`notebooks/day27_oscillators.ipynb` repeats the RSI check on AAPL and charts all four
+(`docs/day27_oscillators_AAPL.png`). One difference to expect: on a ticker with
+a session missing from the store, RSI skips the change across the gap, while TA-Lib
+treats the stored bars as consecutive. The two then disagree for a few hundred bars,
+until Wilder's smoothing forgets the gap.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
