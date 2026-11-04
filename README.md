@@ -895,6 +895,35 @@ the figure would be 1.6%, and scaled by 252 instead it would be 403%. The
 synthetic tests, including a recovered 15/25/35% vol, are in
 `tests/test_volatility.py`.
 
+### Trend
+
+`finmgr.features.trend` adds 21 columns: for n in 20, 50 and 200 sessions, and for
+both the simple and the exponential average:
+
+| column                        | definition                                         |
+|-------------------------------|----------------------------------------------------|
+| `sma_{n}`, `ema_{n}`          | the average, in adjusted price units               |
+| `dist_sma_{n}`, `dist_ema_{n}` | `p[t] / ma[t] - 1`, how far the price is above it |
+| `slope_sma_{n}`, `slope_ema_{n}` | `ma[t] / ma[t-5] - 1`, how fast the average rises |
+| `trend_50_200`                | +1 while `sma_50 > sma_200`, -1 otherwise          |
+| `golden_cross`, `death_cross` | 1 on the bar `sma_50` closes above / below `sma_200` |
+
+```python
+from finmgr.features.trend import read_trend
+panel = read_trend(as_of="2024-06-28", start="2024-01-01")
+```
+
+The EMA uses α = 2/(n+1), seeded with the SMA of its first n prices. Since an
+EMA never forgets that seed entirely, `read_trend` always reads from the first
+stored bar, so a value dated t does not change with `start`. A split rescales
+the levels (`sma_*`, `ema_*`) but not the distances, slopes or crosses, so the
+model should read those. The acceptance check is `notebooks/day26_trend.ipynb`,
+which charts AAPL with its three SMAs (also saved as `docs/day26_trend_AAPL.png`).
+Before drawing, it checks that the SMAs match a hand calculation, that the lines
+get smoother as the window grows, that they stay close to the price with no
+jumps, and that every cross falls on the bar where the 50 and 200 lines change
+sides. The synthetic tests are in `tests/test_trend.py`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
