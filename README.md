@@ -865,6 +865,36 @@ and at every month-end of the year before it. Run it with `make notebooks`, whic
 installs the `notebooks` extra (nbclient, ipykernel) and needs the local
 store. The synthetic tests are in `tests/test_momentum.py`.
 
+### Volatility and risk
+
+`finmgr.features.volatility` adds seven columns. Windows are counted in venue
+sessions, and every value is an annualized decimal unless noted:
+
+| column        | definition                                                     |
+|---------------|----------------------------------------------------------------|
+| `vol_21d`, `vol_63d`, `vol_252d` | std (ddof=1) of daily log returns × √252     |
+| `downdev_63d` | √mean(min(r, 0)²) × √252, the target-zero semideviation         |
+| `atr_14`      | Wilder's ATR(14) on back-adjusted bars, in price units          |
+| `atr_14_pct`  | `atr_14 / adj_close`, a daily fraction; compare this one, not `atr_14` |
+| `mdd_252d`    | worst peak-to-trough fall from t-252 to t, ≤ 0                  |
+
+```python
+from finmgr.features.volatility import read_volatility
+panel = read_volatility(as_of="2024-06-28", start="2024-01-01")
+```
+
+Vol, downside deviation and drawdown use `adj_close_eur`, so a foreign stock's
+risk includes its currency leg (pass `price="adj_close"` to drop it). ATR uses
+the listing-currency high and low, scaled by the close's adjustment factor so a
+split is not a true range. One missing bar does not blank a window: a value
+needs 90% of the window's observations, but never less than its full span of
+history. The acceptance check is `notebooks/day25_volatility.ipynb`: AAPL's
+`vol_252d` computed by hand matches the module to 1e-10 and is 25.4% (in EUR) as
+of 2026-10-14. The other mega caps fall between 20% and 42%. Without the √252
+the figure would be 1.6%, and scaled by 252 instead it would be 403%. The
+synthetic tests, including a recovered 15/25/35% vol, are in
+`tests/test_volatility.py`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
