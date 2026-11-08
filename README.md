@@ -1029,6 +1029,42 @@ oscillators and momentum for 2026 (2050 date×feature cross-sections) are on the
 grid everywhere except 71 `stoch_k` dates, where several names closed at their
 14-day high and tie at 100.
 
+### Market and sector relatives
+
+`finmgr.features.relative` takes out the two common components a stock's return
+carries: the market and its sector. Per ticker, on its own venue's sessions,
+against the configured benchmark (`IWDA.AS`, carried over its own holidays for
+at most 5 sessions):
+
+| column           | definition                                                              |
+|------------------|-------------------------------------------------------------------------|
+| `beta_252`       | OLS slope of daily log returns on the benchmark's, trailing 252 sessions (≥189 pairs) |
+| `idio_vol_252`   | annualized std of the regression residual                               |
+| `mom_resid_12_1` | `Δlog p` over t-252→t-21 minus `beta_252 ×` the benchmark's: market-neutral 12-1 |
+
+```python
+from finmgr.features.relative import read_relatives, sector_demean, sector_share
+rel = read_relatives(as_of="2026-11-06", start="2025-01-01")   # + `sector` column
+panel = sector_demean(mom.merge(rel, on=["ticker", "date", "adj_close_eur"]))
+sector_share(panel, "mom_12_1").mean()                          # η²: how much is sector
+```
+
+`sector_demean` adds `<f>_sec = f − mean(f over the same sector that date)` for
+`SECTOR_FEATURES` (`mom_12_1`, `mom_6_1`, `mom_resid_12_1`, `rev_5d`, `vol_63d`,
+`dist_sma_200`); a sector with fewer than 3 valued names that date gets NaN. All
+of these columns are in day 29's `FEATURE_COLUMNS`, so `normalize` ranks them.
+
+The acceptance test is `test_sector_demeaned_momentum_no_longer_ranks_the_good_sector`
+in `tests/test_relative.py`. On the real store (2025-01-02 to 2026-10-15, 45,057
+rows), sector explains on average 25% of the cross-sectional variance of raw
+`mom_12_1` (η²) and 0% of `mom_12_1_sec`. Each sector's mean 12-1 rank sits on
+average 0.134 from 0.5 raw and 0.025 demeaned. On 2026-10-15 Energy's mean raw rank is 0.90 and
+Real Estate's 0.17; demeaned, every sector is within 0.41–0.53. The raw top 20
+holds 9 Financials and 4 Energy names, while the demeaned top 20 spans 9 sectors.
+The betas match a direct regression (EQNR −1.456 vs −1.44, ASML 2.205 vs 2.224).
+Energy names have negative betas to MSCI World over this window, and New York
+names sit low (median 0.15), partly because Amsterdam closes before New York.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six

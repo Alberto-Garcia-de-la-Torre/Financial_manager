@@ -54,6 +54,7 @@ import pandas as pd
 from finmgr.features.liquidity import ADV_COLUMN, OBV_FLOW_COLUMN, VOLUME_Z_COLUMN
 from finmgr.features.momentum import MOMENTUM_COLUMNS
 from finmgr.features.oscillators import MACD_PCT_COLUMNS, PCTB_COLUMN, RSI_COLUMN, STOCH_COLUMNS
+from finmgr.features.relative import RELATIVE_COLUMNS, SECTOR_COLUMNS
 from finmgr.features.returns import HORIZONS, simple_column
 from finmgr.features.trend import MA_KINDS, MA_WINDOWS, dist_column, slope_column
 from finmgr.features.volatility import (
@@ -71,7 +72,8 @@ RANK_SUFFIX = "_rank"
 Z_SUFFIX = "_z"
 
 #: The raw features that compare across tickers: unit-free ratios, returns,
-#: bounded oscillators and euro liquidity. What :func:`normalize` does by default.
+#: bounded oscillators, euro liquidity, and the market and sector relatives.
+#: What :func:`normalize` does by default.
 FEATURE_COLUMNS: tuple[str, ...] = (
     *(simple_column(h) for h in HORIZONS),
     *MOMENTUM_COLUMNS,
@@ -88,6 +90,8 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     ADV_COLUMN,
     VOLUME_Z_COLUMN,
     OBV_FLOW_COLUMN,
+    *RELATIVE_COLUMNS,
+    *SECTOR_COLUMNS,
 )
 
 #: Positive features spanning orders of magnitude: their z-score is taken in logs.
