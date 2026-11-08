@@ -990,6 +990,45 @@ Broadcom day. The notebook also shows that a stricter bar of €25M, €50M or �
 excludes exactly the bottom 1, 9 or 16 names. The synthetic tests are in
 `tests/test_liquidity.py`.
 
+### Cross-sectional normalization
+
+`finmgr.features.crosssection` turns "is this stock's RSI low?" into "is it the
+lowest of the 100 today?". For each feature `f`, and one date at a time, it adds:
+
+| column   | definition                                                              |
+|----------|-------------------------------------------------------------------------|
+| `f_rank` | `(r − 1) / (n − 1)`, r the rank among the n names with a value: 0 lowest, 1 highest |
+| `f_z`    | `(x − mean) / std` over the same n names (ddof=0); in logs for `adv_eur_21` |
+
+```python
+from finmgr.features.crosssection import normalize
+osc = read_oscillators(as_of="2024-06-28", start="2024-01-01")
+ranked = normalize(osc)                    # every comparable feature present
+ranked = normalize(panel, ["rsi_14"], mask="tradable", clip=3.0)
+```
+
+Each date's ranks are exactly the n-point grid `0, 1/(n−1), …, 1`, so they are
+uniform on [0, 1] by construction, whatever the feature's distribution. Tied
+values share the average grid point, and the mean stays 0.5. The z-score keeps
+the magnitude that the rank discards, at the cost of sensitivity to outliers
+(`clip=` caps it). `FEATURE_COLUMNS` is the default list: returns, momentum,
+risk ratios, MA distances and slopes, the bounded oscillators and euro
+liquidity. Flags and price-unit levels (`sma_200`, `atr_14`, `macd`, `obv`) are
+deliberately left out. `mask=` restricts the cross-section to a boolean column
+such as `tradable`. A date with fewer than 10 names (`min_names=`) gets NaN.
+A value dated t reads only other names' values dated t, so normalization adds
+no look-ahead.
+
+The cross-section is whoever has a value that date. On a venue holiday it is
+the names that traded, and on a date the store has only partly loaded it can be
+as few as 59. The acceptance test is
+`test_each_dates_ranks_are_the_uniform_grid` in `tests/test_crosssection.py`:
+on 300 synthetic dates, with sizes, missing values and distributions varying
+from date to date, every date's sorted ranks equal the grid. On the real store,
+oscillators and momentum for 2026 (2050 date×feature cross-sections) are on the
+grid everywhere except 71 `stoch_k` dates, where several names closed at their
+14-day high and tie at 100.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
