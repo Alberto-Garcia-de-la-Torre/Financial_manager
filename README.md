@@ -957,6 +957,39 @@ a session missing from the store, RSI skips the change across the gap, while TA-
 treats the stored bars as consecutive. The two then disagree for a few hundred bars,
 until Wilder's smoothing forgets the gap.
 
+### Volume and liquidity
+
+`finmgr.features.liquidity` adds six columns. All of them are built on euro *value*
+traded, not share counts, so they compare across tickers and do not move on a split:
+
+| column         | definition                                                        |
+|----------------|-------------------------------------------------------------------|
+| `eur_volume`   | `volume × close_eur`: the euros that changed hands that session    |
+| `adv_eur_21`   | mean `eur_volume` over the last 21 sessions                        |
+| `volume_z_63`  | `ln eur_volume[t]` in std devs from its mean over the 63 sessions *before* t |
+| `obv`          | on-balance volume in euros: ±`eur_volume` by the adjusted close's direction |
+| `obv_flow_21`  | 21-session change in `obv` ÷ the euro volume of those sessions, in [-1, 1] |
+| `tradable`     | `adv_eur_21 ≥ €5M` (`min_adv_eur=`); False while unknown            |
+
+```python
+from finmgr.features.liquidity import read_liquidity
+panel = read_liquidity(as_of="2024-06-28", start="2024-01-01")
+tradable = panel[panel["tradable"]]
+```
+
+`obv`'s level depends on where it starts, so the model should read `obv_flow_21`.
+A new listing is not tradable until it has 21 sessions of volume. The threshold is
+absolute, so on today's 100 large caps it does not bind: the thinnest, GRF.MC, trades
+€12M a day as of 2026-10-15. It does bind on their history. The acceptance check is
+`notebooks/day28_liquidity.ipynb`, which matches `adv_eur_21` to a hand calculation. It
+then checks that on every one of the 331 dates where the filter excluded a name, the
+excluded names were exactly those under €5M, and every one of them was thinner than
+every included name (never worse than 2nd-thinnest of ~99). Those names were Hermès in
+2010–14, Vonovia after its 2013 IPO, Tesla after its 2010 IPO, and one borderline
+Broadcom day. The notebook also shows that a stricter bar of €25M, €50M or €100M
+excludes exactly the bottom 1, 9 or 16 names. The synthetic tests are in
+`tests/test_liquidity.py`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
