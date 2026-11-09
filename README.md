@@ -1144,6 +1144,32 @@ rule, if two model features exceed 0.95, or if a model feature covers less than
 the selection, so no label information leaks into later backtests.
 [`docs/feature_hygiene.md`](docs/feature_hygiene.md) has the full measurements.
 
+## Labels
+
+`finmgr.backtest.labels` builds what the model is asked to predict, and it is
+the only place in the project that looks forward. For N = 5 and 21 sessions,
+the row dated t gets:
+
+| column | meaning |
+|---|---|
+| `fwd_ret_{N}d` | `p[t+N] / p[t] - 1`: the return realized from t+1 through t+N |
+| `fwd_xs_{N}d` | that return minus the date's equal-weighted universe mean |
+| `fwd_top_{N}d` | 1.0 if the return is in the date's top quintile (`rank / n > 0.8`), else 0.0 |
+
+```python
+from finmgr.backtest.labels import read_labels
+labels = read_labels(as_of="2026-10-15", start="2025-01-01")   # all 100, both horizons
+```
+
+The forward return is day 23's backward `ret_{N}d` moved with an explicit
+`shift(-N)`, on each venue's session grid, so a missing bar makes the labels
+that start or end on it NaN instead of stretching the horizon. Day t's own
+return is a feature, never part of t's label. The last N sessions before
+`as_of` have no label yet, and the excess and top-quintile columns are NaN on
+dates with fewer than 10 names. Labels are not in the feature panel and must
+never be model inputs. `tests/test_labels.py` holds the acceptance test: the
+label at t equals the daily returns of t+1 .. t+N compounded by hand.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
