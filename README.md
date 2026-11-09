@@ -1101,6 +1101,49 @@ this on a synthetic store, and the real store was checked by building to
 registry, or dated after `--as-of`, is never appended to. Rebuild it with
 `--full`.
 
+### Feature hygiene: the ten features the model reads
+
+The panel keeps all 56 candidate columns, and most of them repeat each other.
+Log and simple returns rank identically, an EMA distance is a 0.97 copy of its
+SMA twin, and a 20-day slope is the 21-day return. For every registry feature
+and flag,
+[`finmgr/features/selection.yaml`](finmgr/features/selection.yaml) records
+whether the model reads it (`model`), whether it only restricts the universe
+(`filter`, which applies to `tradable` alone), or whether the model ignores it
+(`drop`), with a written reason for each choice. Dropped columns stay in the
+panel, so a later day can bring one back without a rebuild.
+
+```bash
+finmgr features --hygiene   # writes docs/feature_hygiene.md and data/features/rank_correlation.csv
+```
+
+```python
+from finmgr.features.hygiene import model_features, model_columns
+model_columns()          # ['ret_21d_rank', 'mom_12_1_rank', ...]; model_columns("_z") for z-scores
+```
+
+The command measures NaN coverage per feature per year and the pairwise
+correlation of per-date ranks. Pooled over all dates, that correlation equals
+the n-weighted average of each date's Spearman ρ. The command then applies the
+roadmap's rule: walking the registry from simple to derived, it drops any
+feature whose |ρ| with a simpler surviving feature exceeds 0.95. That rule
+alone cuts 56 to 44. The rest of the cut to **10** is judgement, applied one
+family at a time:
+
+- **Reversal:** `rev_5d_sec` and `ret_21d`.
+- **Momentum:** `mom_12_1`, and `mom_resid_12_1_sec` for the part not explained by market or sector.
+- **Trend:** `dist_sma_200` for the level and `macd_hist_pct` for acceleration.
+- **Risk:** `vol_63d` and `beta_252`.
+- **Liquidity and attention:** `adv_eur_21` and `volume_z_63`.
+
+Across these ten, the largest |ρ| between any two is 0.78 (the two momentum
+features), and no feature is more than 72% explained by the other nine. The
+command exits non-zero, with the reason, if a model feature fails the 0.95
+rule, if two model features exceed 0.95, or if a model feature covers less than
+95% of rows in any year after its warm-up. Forward returns played no part in
+the selection, so no label information leaks into later backtests.
+[`docs/feature_hygiene.md`](docs/feature_hygiene.md) has the full measurements.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six

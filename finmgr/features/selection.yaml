@@ -1,0 +1,213 @@
+# Day 32: which panel columns the model reads, and why each one earns its place.
+#
+# Every `feature` and `flag` column of the registry appears here exactly once with
+#
+#   use   model  - an input to the model (it reads the column's `_rank` / `_z`)
+#         filter - not an input; restricts which names may be held
+#         drop   - stays in the panel as a library column, but the model ignores it
+#   why   the defence (model / filter) or the reason it went (drop)
+#
+# The panel keeps every column: dropping here is a modelling decision, not a
+# deletion, so a later day can revisit it without rebuilding.
+#
+# Two rules, both checked by `finmgr features --hygiene`
+# (finmgr.features.hygiene.check_selection) against the stored panel:
+#
+#   1. Mechanical (the roadmap's): walking the registry from simple to derived,
+#      a feature whose rank correlation with a simpler surviving one exceeds
+#      `threshold` is dropped. A `model` feature may never be one of those.
+#   2. Judgement: no two `model` features exceed `threshold` with each other,
+#      and every `model` feature names a distinct economic idea. Within a family
+#      of near-duplicates (ρ ≳ 0.8) the simplest member is kept.
+#
+# Correlations are pooled Pearson on per-date ranks, which is the n-weighted
+# average of the per-date Spearman correlations (every date's ranks have the
+# same mean and variance). Selection used redundancy and priors only, never a
+# feature's correlation with forward returns: picking on that before day 33's
+# labels and the walk-forward harness exist would leak into every later backtest.
+# The ρ values quoted below are from the panel built 2026-11-10 (sessions 2010-01-04 to 2026-10-15).
+
+threshold: 0.95
+
+features:
+  # --- returns (day 23) ------------------------------------------------------
+  - name: ret_1d
+    use: drop
+    why: one-day reversal is bid-ask bounce and microstructure; unharvestable at a 5-21 session holding period after costs
+  - name: ret_5d
+    use: drop
+    why: ρ -1.00 with rev_5d by construction; the week is carried by rev_5d_sec, the sector-relative version
+  - name: ret_21d
+    use: model
+    why: one-month reversal - the month 12-1 momentum deliberately skips because it tends to reverse (Jegadeesh 1990); also the simplest member of the short-horizon price family (rsi_14 ρ 0.82, dist_sma_50 0.85, obv_flow_21 0.70)
+  - name: ret_63d
+    use: drop
+    why: three-month return sits between ret_21d and mom_6_1; ρ 0.88 with slope_sma_50 and covered by dist_sma_200 and the momentum pair
+  - name: ret_126d
+    use: drop
+    why: ρ 0.92 with dist_sma_200 and 0.90 with mom_6_1; adds the last month, which ret_21d already carries
+  - name: ret_252d
+    use: drop
+    why: ρ 0.95 with mom_12_1, which is the same horizon without the reversing last month
+  - name: logret_1d
+    use: drop
+    why: monotone in ret_1d, so its per-date rank is identical (ρ 1.00)
+  - name: logret_5d
+    use: drop
+    why: monotone in ret_5d, so its per-date rank is identical (ρ 1.00)
+  - name: logret_21d
+    use: drop
+    why: monotone in ret_21d, so its per-date rank is identical (ρ 1.00)
+  - name: logret_63d
+    use: drop
+    why: monotone in ret_63d, so its per-date rank is identical (ρ 1.00)
+  - name: logret_126d
+    use: drop
+    why: monotone in ret_126d, so its per-date rank is identical (ρ 1.00)
+  - name: logret_252d
+    use: drop
+    why: monotone in ret_252d, so its per-date rank is identical (ρ 1.00)
+
+  # --- momentum (day 24) -----------------------------------------------------
+  - name: mom_12_1
+    use: model
+    why: the most replicated cross-sectional anomaly (Jegadeesh-Titman 1993) and day 36's baseline strategy; the model has to beat it while seeing it
+  - name: mom_6_1
+    use: drop
+    why: half of 12-1's window; ρ 0.64 with mom_12_1 and 0.76 with dist_sma_200, and with both kept it is 76% explained by the model set
+  - name: rev_5d
+    use: drop
+    why: ρ 0.83 with rev_5d_sec; the sector-relative reversal is the cleaner signal (a sector-wide week is news, not overreaction)
+
+  # --- volatility and risk (day 25) ------------------------------------------
+  - name: vol_21d
+    use: drop
+    why: ρ 0.81 with vol_63d and noisier; a month of returns is too few for a stable risk rank
+  - name: vol_63d
+    use: model
+    why: the low-volatility anomaly (Ang et al. 2006; Blitz-van Vliet 2007), and the risk measure day 52 sizes with; simplest of the vol family (vol_252d 0.84, downdev_63d 0.90, atr_14_pct 0.84)
+  - name: vol_252d
+    use: drop
+    why: ρ 0.84 with vol_63d and 0.92 with idio_vol_252; a year-long window is slow to see a regime change
+  - name: downdev_63d
+    use: drop
+    why: ρ 0.90 with vol_63d over the same window; a separate downside measure would need a skewed universe to pay its way
+  - name: atr_14_pct
+    use: drop
+    why: ρ 0.84 with vol_63d and 0.83 with vol_21d; range-based vol on a short window
+  - name: mdd_252d
+    use: drop
+    why: a blend of what is already kept - ρ -0.57 with vol_63d, 0.48 with mom_12_1, -0.42 with beta_252 (58% explained by the model set)
+
+  # --- trend (day 26) --------------------------------------------------------
+  - name: dist_sma_20
+    use: drop
+    why: ρ 0.97 with dist_ema_20, 0.87 with bb_pctb and rsi_14; a short-horizon price level ret_21d already carries
+  - name: dist_sma_50
+    use: drop
+    why: ρ 0.85 with ret_21d and 0.93 with macd_pct
+  - name: dist_sma_200
+    use: model
+    why: where the price sits against its long-run trend (the 200-day rule of trend followers); includes the last month and weights the year evenly, so it is not 12-1 momentum (ρ 0.62)
+  - name: dist_ema_20
+    use: drop
+    why: ρ 0.97 with dist_sma_20, its simpler twin
+  - name: dist_ema_50
+    use: drop
+    why: ρ 0.98 with dist_sma_50, its simpler twin
+  - name: dist_ema_200
+    use: drop
+    why: ρ 0.98 with dist_sma_200, its simpler twin
+  - name: slope_sma_20
+    use: drop
+    why: ρ 0.94 with ret_21d - the slope of a 20-day mean is nearly the 20-day return
+  - name: slope_sma_50
+    use: drop
+    why: ρ 0.88 with ret_63d; another medium-horizon return
+  - name: slope_sma_200
+    use: drop
+    why: ρ 0.87 with ret_252d and 0.84 with dist_sma_200
+  - name: slope_ema_20
+    use: drop
+    why: ρ 0.87-0.88 with dist_sma_20, slope_ema_50 and macd_pct
+  - name: slope_ema_50
+    use: drop
+    why: ρ 0.94-0.95 with dist_ema_50 and macd_pct
+  - name: slope_ema_200
+    use: drop
+    why: ρ 0.98 with dist_ema_200 and 0.97 with dist_sma_200
+  - name: trend_50_200
+    use: drop
+    why: the sign of sma_50 - sma_200, a thresholded trend level dist_sma_200 carries in full
+  - name: golden_cross
+    use: drop
+    why: fires on 0.3% of rows; an event that rare cannot be ranked or learnt from 100 names
+  - name: death_cross
+    use: drop
+    why: fires on 0.3% of rows; an event that rare cannot be ranked or learnt from 100 names
+
+  # --- oscillators (day 27) --------------------------------------------------
+  - name: rsi_14
+    use: drop
+    why: ρ 0.82 with ret_21d and 0.87 with dist_sma_50; a bounded recent return, 78% explained by the model set
+  - name: macd_pct
+    use: drop
+    why: ρ 0.93-0.95 with dist_sma_50 and slope_ema_50
+  - name: macd_signal_pct
+    use: drop
+    why: ρ 0.94 with macd_pct, a smoothed copy of it
+  - name: macd_hist_pct
+    use: model
+    why: trend acceleration - the only feature measuring the change in trend rather than its level; ρ at most 0.49 with any other model feature
+  - name: stoch_k
+    use: drop
+    why: ρ 0.89 with bb_pctb and 0.88 with stoch_d; another short-horizon position-in-range
+  - name: stoch_d
+    use: drop
+    why: ρ 0.88 with stoch_k, a smoothed copy of it
+  - name: bb_pctb
+    use: drop
+    why: ρ 0.87 with dist_sma_20 and rsi_14; the same short-horizon overbought/oversold read
+
+  # --- volume and liquidity (day 28) -----------------------------------------
+  - name: adv_eur_21
+    use: model
+    why: size and liquidity in one number (euro turnover tracks market cap); the illiquidity premium (Amihud 2002) and the one feature with no price-path content (ρ at most 0.15)
+  - name: volume_z_63
+    use: model
+    why: abnormal volume, the high-volume return premium (Gervais-Kaniel-Mingelgrin 2001); uncorrelated with everything (ρ at most 0.12 with any feature, 1% explained by the model set)
+  - name: obv_flow_21
+    use: drop
+    why: ρ 0.70 with ret_21d - volume-signed flow over the same month is mostly that month's return
+  - name: tradable
+    use: filter
+    why: €5M average daily euro volume; decides which names may be held, never how they score
+
+  # --- market and sector relatives (day 30) ----------------------------------
+  - name: beta_252
+    use: model
+    why: betting against beta (Frazzini-Pedersen 2014); market exposure is a distinct risk from total vol (ρ 0.47)
+  - name: idio_vol_252
+    use: drop
+    why: ρ 0.92 with vol_252d and 0.78 with vol_63d; the idiosyncratic-vol effect is carried by vol_63d
+  - name: mom_resid_12_1
+    use: drop
+    why: ρ 0.95 with mom_12_1 - against a broad benchmark most of a stock's year is its own
+  - name: mom_12_1_sec
+    use: drop
+    why: ρ 0.95 with mom_resid_12_1_sec, which also strips the market
+  - name: mom_6_1_sec
+    use: drop
+    why: ρ 0.82 with mom_6_1 and 0.75 with dist_sma_200_sec; dropped with mom_6_1
+  - name: mom_resid_12_1_sec
+    use: model
+    why: residual momentum against market and sector (Blitz-Huij-Martens 2011) - stock-specific trend, not a good sector year; ρ 0.78 with mom_12_1, so the pair lets the model weigh the two
+  - name: rev_5d_sec
+    use: model
+    why: one-week reversal net of the sector (Da-Liu-Schaumburg 2014) - overreaction to stock news; the shortest horizon kept
+  - name: vol_63d_sec
+    use: drop
+    why: ρ 0.77 with vol_63d; vol is a risk measure, and ranking it within the sector adds little
+  - name: dist_sma_200_sec
+    use: drop
+    why: ρ 0.82 with dist_sma_200

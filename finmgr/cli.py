@@ -59,6 +59,7 @@ from finmgr.data import manifest as manifest_module
 from finmgr.data import quarantine as quarantine_module
 from finmgr.data import rates as rates_module
 from finmgr.data import universe as universe_module
+from finmgr.features import hygiene as hygiene_module
 from finmgr.features import panel as panel_module
 
 app = typer.Typer(
@@ -1043,6 +1044,15 @@ def features(
     check_only: bool = typer.Option(
         False, "--check", help="Only check the stored panel against the registry; build nothing."
     ),
+    hygiene: bool = typer.Option(
+        False,
+        "--hygiene",
+        help="Measure the stored panel's coverage and correlations, check "
+        "finmgr/features/selection.yaml against them and write the report; build nothing.",
+    ),
+    report_path: str = typer.Option(
+        "docs/feature_hygiene.md", "--report", help="Where --hygiene writes its report."
+    ),
 ) -> None:
     """Build the feature panel at data/features/panel.parquet from the stored bars.
 
@@ -1051,6 +1061,9 @@ def features(
     finmgr/features/registry.yaml, and the build fails if the two differ.
     """
     settings = load_settings()
+    if hygiene:
+        _feature_hygiene(settings, Path(report_path))
+        return
     if check_only:
         path = panel_module.panel_path(settings=settings)
         if not path.exists():
@@ -1082,6 +1095,36 @@ def features(
         f"{result.mode} build: {result.rows} rows x {result.columns} columns "
         f"({result.first} .. {result.last}{since}) -> {result.path}; registry matches"
     )
+
+
+def _feature_hygiene(settings: Settings, report_path: Path) -> None:
+    path = panel_module.panel_path(settings=settings)
+    if not path.exists():
+        log.error("finmgr features --hygiene: no panel at %s", path)
+        raise typer.Exit(code=1)
+    try:
+        selection = hygiene_module.load_selection()
+    except ValueError as exc:
+        log.error("finmgr features --hygiene: %s", exc)
+        raise typer.Exit(code=1) from exc
+    columns = [e["name"] for e in selection.entries]
+    result = hygiene_module.run_hygiene(
+        panel_module.read_panel(columns=columns, path=path), selection=selection
+    )
+    as_of = panel_module.panel_metadata(path).get("as_of")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(hygiene_module.render_report(result, as_of=as_of), encoding="utf-8")
+    matrix = path.with_name("rank_correlation.csv")
+    result.corr.round(4).to_csv(matrix)
+    console.print(
+        f"{len(columns)} candidates: {len(result.survivors)} survive the "
+        f"{selection.threshold} rule, {len(selection.model)} chosen for the model "
+        f"({', '.join(selection.model)}); report -> {report_path}, matrix -> {matrix}"
+    )
+    if result.problems:
+        for problem in result.problems:
+            log.error("finmgr features --hygiene: %s", problem)
+        raise typer.Exit(code=1)
 
 
 @app.command()
