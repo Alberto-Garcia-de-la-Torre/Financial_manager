@@ -1065,6 +1065,42 @@ The betas match a direct regression (EQNR −1.456 vs −1.44, ASML 2.205 vs 2.2
 Energy names have negative betas to MSCI World over this window, and New York
 names sit low (median 0.15), partly because Amsterdam closes before New York.
 
+### The feature panel
+
+`finmgr features` assembles everything above into one file,
+`data/features/panel.parquet`, indexed by `(date, ticker)`: the raw features
+that compare across tickers, each ticker's `sector`, the `tradable` flag, the
+`_sec` columns, and a `_rank` and a `_z` for every one of `FEATURE_COLUMNS`.
+That is 149 columns plus the two index levels. Every column is documented in
+[`finmgr/features/registry.yaml`](finmgr/features/registry.yaml), in panel
+order: its kind, its formula, its window in sessions, and the expected
+direction of its relation to forward returns (a prior to test, not a result).
+Columns the modules compute but the panel leaves out (price-unit levels such
+as `sma_200`, `macd` and `atr_14`, plus the inputs) are listed with the reason
+in `finmgr.features.panel.EXCLUDED`. A build fails if the computed columns are
+not exactly the registry's.
+
+```bash
+finmgr features --full      # rebuild from scratch (~1 min for 2010-2026, 417k rows)
+finmgr features             # append: new dates, plus the last 10 days again for late bars
+finmgr features --check     # stored panel vs registry, without building
+```
+
+```python
+from finmgr.features.panel import read_panel
+panel = read_panel()                                  # MultiIndex (date, ticker)
+panel.xs(date(2026, 10, 15), level="date")["mom_12_1_rank"]
+```
+
+Each build computes the features over every ticker's full stored history,
+because EMA, RSI, MACD and ATR are recursions that start at the first bar. It
+then normalizes and writes only the dates it is (re)building. As a result, an
+incremental build matches a full rebuild exactly. `tests/test_panel.py` checks
+this on a synthetic store, and the real store was checked by building to
+2026-09-30 and appending to 2026-10-15. A panel built under a different
+registry, or dated after `--as-of`, is never appended to. Rebuild it with
+`--full`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -1075,7 +1111,7 @@ finmgr --help
 
   ingest     Download daily bars for the universe into the data store.
   check      Run the data quality checks over the stored bars, severity-tagged.
-  features   Build the feature panel from the stored bars.
+  features   Build the feature panel at data/features/panel.parquet from the stored bars.
   train      Train a model walk-forward on the feature panel.
   rank       Score and rank the universe as of a given date.
   report     Render the daily HTML report.
@@ -1083,7 +1119,8 @@ finmgr --help
 
 `ingest` is real from day 11 — see "Ingesting the universe" above, and
 `finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
-quality checks" above), and `quarantine` (day 20) sits right after it. The other four are stubs: each prints
+quality checks" above), and `quarantine` (day 20) sits right after it. `features` is real from day 31
+(see "The feature panel" above). The other three are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what

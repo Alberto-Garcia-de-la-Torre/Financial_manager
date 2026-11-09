@@ -1,0 +1,943 @@
+# The feature panel's registry: one entry per column of data/features/panel.parquet,
+# in the panel's column order (the two index levels first).
+#
+#   name       the column
+#   kind       meta (index and labels) | flag (a 0/1 or boolean state) | feature
+#              (a raw feature) | rank / zscore (its per-date cross-sectional rank
+#              on [0, 1] and z-score, from finmgr.features.crosssection)
+#   source     the finmgr.features module that computes it
+#   formula    what it is; p is the price the module uses (adj_close_eur unless
+#              the module says otherwise), t the date, windows count venue sessions
+#   window     the longest look-back in sessions, null if none
+#   direction  the prior on its relation to forward cross-sectional returns:
+#              positive (higher is expected to do better), negative, or neutral
+#              (no prior, or not a signal). A prior to test, not a finding.
+#
+# Every build checks that the panel's columns are exactly these names, in this
+# order (finmgr.features.panel.check_registry). Columns the modules compute but
+# the panel leaves out are listed, with the reason, in panel.EXCLUDED.
+
+columns:
+  # --- index and labels ------------------------------------------------------
+  - name: date
+    kind: meta
+    source: data.store
+    formula: session date (index level 0)
+    window: null
+    direction: neutral
+  - name: ticker
+    kind: meta
+    source: data.universe
+    formula: Yahoo ticker (index level 1)
+    window: null
+    direction: neutral
+  - name: sector
+    kind: meta
+    source: data.universe
+    formula: sector column of config/universe.csv
+    window: null
+    direction: neutral
+
+  # --- returns (day 23) ------------------------------------------------------
+  - name: ret_1d
+    kind: feature
+    source: returns
+    formula: p[t] / p[t-1] - 1
+    window: 1
+    direction: negative
+  - name: ret_5d
+    kind: feature
+    source: returns
+    formula: p[t] / p[t-5] - 1
+    window: 5
+    direction: negative
+  - name: ret_21d
+    kind: feature
+    source: returns
+    formula: p[t] / p[t-21] - 1
+    window: 21
+    direction: negative
+  - name: ret_63d
+    kind: feature
+    source: returns
+    formula: p[t] / p[t-63] - 1
+    window: 63
+    direction: positive
+  - name: ret_126d
+    kind: feature
+    source: returns
+    formula: p[t] / p[t-126] - 1
+    window: 126
+    direction: positive
+  - name: ret_252d
+    kind: feature
+    source: returns
+    formula: p[t] / p[t-252] - 1
+    window: 252
+    direction: positive
+  - name: logret_1d
+    kind: feature
+    source: returns
+    formula: ln p[t] - ln p[t-1]
+    window: 1
+    direction: negative
+  - name: logret_5d
+    kind: feature
+    source: returns
+    formula: ln p[t] - ln p[t-5]
+    window: 5
+    direction: negative
+  - name: logret_21d
+    kind: feature
+    source: returns
+    formula: ln p[t] - ln p[t-21]
+    window: 21
+    direction: negative
+  - name: logret_63d
+    kind: feature
+    source: returns
+    formula: ln p[t] - ln p[t-63]
+    window: 63
+    direction: positive
+  - name: logret_126d
+    kind: feature
+    source: returns
+    formula: ln p[t] - ln p[t-126]
+    window: 126
+    direction: positive
+  - name: logret_252d
+    kind: feature
+    source: returns
+    formula: ln p[t] - ln p[t-252]
+    window: 252
+    direction: positive
+
+  # --- momentum (day 24) -----------------------------------------------------
+  - name: mom_12_1
+    kind: feature
+    source: momentum
+    formula: p[t-21] / p[t-252] - 1 (the year, skipping its last month)
+    window: 252
+    direction: positive
+  - name: mom_6_1
+    kind: feature
+    source: momentum
+    formula: p[t-21] / p[t-126] - 1 (the half year, skipping its last month)
+    window: 126
+    direction: positive
+  - name: rev_5d
+    kind: feature
+    source: momentum
+    formula: -(p[t] / p[t-5] - 1) (last week's return, sign flipped)
+    window: 5
+    direction: positive
+
+  # --- volatility and risk (day 25) ------------------------------------------
+  - name: vol_21d
+    kind: feature
+    source: volatility
+    formula: std(daily log returns over 21 sessions, ddof=1) * sqrt(252)
+    window: 21
+    direction: negative
+  - name: vol_63d
+    kind: feature
+    source: volatility
+    formula: std(daily log returns over 63 sessions, ddof=1) * sqrt(252)
+    window: 63
+    direction: negative
+  - name: vol_252d
+    kind: feature
+    source: volatility
+    formula: std(daily log returns over 252 sessions, ddof=1) * sqrt(252)
+    window: 252
+    direction: negative
+  - name: downdev_63d
+    kind: feature
+    source: volatility
+    formula: sqrt(mean(min(r, 0)^2) over 63 sessions) * sqrt(252), r daily log returns
+    window: 63
+    direction: negative
+  - name: atr_14_pct
+    kind: feature
+    source: volatility
+    formula: Wilder ATR(14) of the adjusted bar / close
+    window: 14
+    direction: negative
+  - name: mdd_252d
+    kind: feature
+    source: volatility
+    formula: worst peak-to-trough fall of p within t-252..t, as a fraction <= 0
+    window: 252
+    direction: positive
+
+  # --- trend (day 26) --------------------------------------------------------
+  - name: dist_sma_20
+    kind: feature
+    source: trend
+    formula: p[t] / SMA20[t] - 1
+    window: 20
+    direction: negative
+  - name: dist_sma_50
+    kind: feature
+    source: trend
+    formula: p[t] / SMA50[t] - 1
+    window: 50
+    direction: positive
+  - name: dist_sma_200
+    kind: feature
+    source: trend
+    formula: p[t] / SMA200[t] - 1
+    window: 200
+    direction: positive
+  - name: dist_ema_20
+    kind: feature
+    source: trend
+    formula: p[t] / EMA20[t] - 1, alpha = 2/21, seeded with an SMA
+    window: 20
+    direction: negative
+  - name: dist_ema_50
+    kind: feature
+    source: trend
+    formula: p[t] / EMA50[t] - 1, alpha = 2/51, seeded with an SMA
+    window: 50
+    direction: positive
+  - name: dist_ema_200
+    kind: feature
+    source: trend
+    formula: p[t] / EMA200[t] - 1, alpha = 2/201, seeded with an SMA
+    window: 200
+    direction: positive
+  - name: slope_sma_20
+    kind: feature
+    source: trend
+    formula: SMA20[t] / SMA20[t-5] - 1
+    window: 25
+    direction: positive
+  - name: slope_sma_50
+    kind: feature
+    source: trend
+    formula: SMA50[t] / SMA50[t-5] - 1
+    window: 55
+    direction: positive
+  - name: slope_sma_200
+    kind: feature
+    source: trend
+    formula: SMA200[t] / SMA200[t-5] - 1
+    window: 205
+    direction: positive
+  - name: slope_ema_20
+    kind: feature
+    source: trend
+    formula: EMA20[t] / EMA20[t-5] - 1
+    window: 25
+    direction: positive
+  - name: slope_ema_50
+    kind: feature
+    source: trend
+    formula: EMA50[t] / EMA50[t-5] - 1
+    window: 55
+    direction: positive
+  - name: slope_ema_200
+    kind: feature
+    source: trend
+    formula: EMA200[t] / EMA200[t-5] - 1
+    window: 205
+    direction: positive
+  - name: trend_50_200
+    kind: flag
+    source: trend
+    formula: +1 while SMA50 > SMA200, -1 otherwise
+    window: 200
+    direction: positive
+  - name: golden_cross
+    kind: flag
+    source: trend
+    formula: 1 on the bar SMA50 closes above SMA200 after a bar it did not, else 0
+    window: 200
+    direction: positive
+  - name: death_cross
+    kind: flag
+    source: trend
+    formula: 1 on the bar SMA50 closes below SMA200 after a bar it did not, else 0
+    window: 200
+    direction: negative
+
+  # --- oscillators (day 27); p is adj_close in the listing currency ------------
+  - name: rsi_14
+    kind: feature
+    source: oscillators
+    formula: 100 * avgU / (avgU + avgD), Wilder-smoothed up and down close changes, 0..100
+    window: 14
+    direction: negative
+  - name: macd_pct
+    kind: feature
+    source: oscillators
+    formula: (EMA12(p) - EMA26(p)) / p
+    window: 26
+    direction: positive
+  - name: macd_signal_pct
+    kind: feature
+    source: oscillators
+    formula: EMA9(EMA12(p) - EMA26(p)) / p
+    window: 34
+    direction: positive
+  - name: macd_hist_pct
+    kind: feature
+    source: oscillators
+    formula: (macd - macd_signal) / p
+    window: 34
+    direction: positive
+  - name: stoch_k
+    kind: feature
+    source: oscillators
+    formula: 100 * (C - lowest low 14) / (highest high 14 - lowest low 14), 0..100
+    window: 14
+    direction: negative
+  - name: stoch_d
+    kind: feature
+    source: oscillators
+    formula: 3-session SMA of stoch_k
+    window: 16
+    direction: negative
+  - name: bb_pctb
+    kind: feature
+    source: oscillators
+    formula: (C - lower) / (upper - lower), bands SMA20 -/+ 2 * stdev20
+    window: 20
+    direction: negative
+
+  # --- volume and liquidity (day 28) ---------------------------------------------
+  - name: adv_eur_21
+    kind: feature
+    source: liquidity
+    formula: mean of volume * close_eur over 21 sessions (average daily euro value)
+    window: 21
+    direction: negative
+  - name: volume_z_63
+    kind: feature
+    source: liquidity
+    formula: (ln ev[t] - mean) / std of ln ev over t-63..t-1, ev = volume * close_eur
+    window: 64
+    direction: positive
+  - name: obv_flow_21
+    kind: feature
+    source: liquidity
+    formula: (OBV[t] - OBV[t-21]) / sum of euro volume over those 21 sessions, in [-1, 1]
+    window: 21
+    direction: positive
+  - name: tradable
+    kind: flag
+    source: liquidity
+    formula: adv_eur_21 >= EUR 5M; False when unknown
+    window: 21
+    direction: neutral
+
+  # --- market and sector relatives (day 30) ----------------------------------------
+  - name: beta_252
+    kind: feature
+    source: relative
+    formula: cov(r_i, r_m) / var(r_m) of daily log returns over 252 sessions, m = benchmark
+    window: 252
+    direction: negative
+  - name: idio_vol_252
+    kind: feature
+    source: relative
+    formula: sqrt((var(r_i) - cov^2 / var(r_m)) * 252), the residual's annualized vol
+    window: 252
+    direction: negative
+  - name: mom_resid_12_1
+    kind: feature
+    source: relative
+    formula: (l_i[t-21] - l_i[t-252]) - beta_252 * (l_m[t-21] - l_m[t-252]), l = log price
+    window: 252
+    direction: positive
+  - name: mom_12_1_sec
+    kind: feature
+    source: relative
+    formula: mom_12_1 - mean(mom_12_1 over the same sector and date)
+    window: 252
+    direction: positive
+  - name: mom_6_1_sec
+    kind: feature
+    source: relative
+    formula: mom_6_1 - mean(mom_6_1 over the same sector and date)
+    window: 126
+    direction: positive
+  - name: mom_resid_12_1_sec
+    kind: feature
+    source: relative
+    formula: mom_resid_12_1 - mean(mom_resid_12_1 over the same sector and date)
+    window: 252
+    direction: positive
+  - name: rev_5d_sec
+    kind: feature
+    source: relative
+    formula: rev_5d - mean(rev_5d over the same sector and date)
+    window: 5
+    direction: positive
+  - name: vol_63d_sec
+    kind: feature
+    source: relative
+    formula: vol_63d - mean(vol_63d over the same sector and date)
+    window: 63
+    direction: negative
+  - name: dist_sma_200_sec
+    kind: feature
+    source: relative
+    formula: dist_sma_200 - mean(dist_sma_200 over the same sector and date)
+    window: 200
+    direction: positive
+
+  # --- cross-sectional ranks and z-scores (day 29) ------------------------------
+  - name: ret_1d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of ret_1d among the date's n names; NaN under 10 names
+    window: 1
+    direction: negative
+  - name: ret_1d_z
+    kind: zscore
+    source: crosssection
+    formula: (ret_1d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 1
+    direction: negative
+  - name: ret_5d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of ret_5d among the date's n names; NaN under 10 names
+    window: 5
+    direction: negative
+  - name: ret_5d_z
+    kind: zscore
+    source: crosssection
+    formula: (ret_5d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 5
+    direction: negative
+  - name: ret_21d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of ret_21d among the date's n names; NaN under 10 names
+    window: 21
+    direction: negative
+  - name: ret_21d_z
+    kind: zscore
+    source: crosssection
+    formula: (ret_21d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 21
+    direction: negative
+  - name: ret_63d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of ret_63d among the date's n names; NaN under 10 names
+    window: 63
+    direction: positive
+  - name: ret_63d_z
+    kind: zscore
+    source: crosssection
+    formula: (ret_63d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 63
+    direction: positive
+  - name: ret_126d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of ret_126d among the date's n names; NaN under 10 names
+    window: 126
+    direction: positive
+  - name: ret_126d_z
+    kind: zscore
+    source: crosssection
+    formula: (ret_126d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 126
+    direction: positive
+  - name: ret_252d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of ret_252d among the date's n names; NaN under 10 names
+    window: 252
+    direction: positive
+  - name: ret_252d_z
+    kind: zscore
+    source: crosssection
+    formula: (ret_252d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_12_1_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mom_12_1 among the date's n names; NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_12_1_z
+    kind: zscore
+    source: crosssection
+    formula: (mom_12_1 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_6_1_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mom_6_1 among the date's n names; NaN under 10 names
+    window: 126
+    direction: positive
+  - name: mom_6_1_z
+    kind: zscore
+    source: crosssection
+    formula: (mom_6_1 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 126
+    direction: positive
+  - name: rev_5d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of rev_5d among the date's n names; NaN under 10 names
+    window: 5
+    direction: positive
+  - name: rev_5d_z
+    kind: zscore
+    source: crosssection
+    formula: (rev_5d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 5
+    direction: positive
+  - name: vol_21d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of vol_21d among the date's n names; NaN under 10 names
+    window: 21
+    direction: negative
+  - name: vol_21d_z
+    kind: zscore
+    source: crosssection
+    formula: (vol_21d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 21
+    direction: negative
+  - name: vol_63d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of vol_63d among the date's n names; NaN under 10 names
+    window: 63
+    direction: negative
+  - name: vol_63d_z
+    kind: zscore
+    source: crosssection
+    formula: (vol_63d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 63
+    direction: negative
+  - name: vol_252d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of vol_252d among the date's n names; NaN under 10 names
+    window: 252
+    direction: negative
+  - name: vol_252d_z
+    kind: zscore
+    source: crosssection
+    formula: (vol_252d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: negative
+  - name: downdev_63d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of downdev_63d among the date's n names; NaN under 10 names
+    window: 63
+    direction: negative
+  - name: downdev_63d_z
+    kind: zscore
+    source: crosssection
+    formula: (downdev_63d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 63
+    direction: negative
+  - name: atr_14_pct_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of atr_14_pct among the date's n names; NaN under 10 names
+    window: 14
+    direction: negative
+  - name: atr_14_pct_z
+    kind: zscore
+    source: crosssection
+    formula: (atr_14_pct - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 14
+    direction: negative
+  - name: mdd_252d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mdd_252d among the date's n names; NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mdd_252d_z
+    kind: zscore
+    source: crosssection
+    formula: (mdd_252d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: positive
+  - name: dist_sma_20_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_sma_20 among the date's n names; NaN under 10 names
+    window: 20
+    direction: negative
+  - name: dist_sma_20_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_sma_20 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 20
+    direction: negative
+  - name: dist_sma_50_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_sma_50 among the date's n names; NaN under 10 names
+    window: 50
+    direction: positive
+  - name: dist_sma_50_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_sma_50 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 50
+    direction: positive
+  - name: dist_sma_200_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_sma_200 among the date's n names; NaN under 10 names
+    window: 200
+    direction: positive
+  - name: dist_sma_200_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_sma_200 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 200
+    direction: positive
+  - name: dist_ema_20_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_ema_20 among the date's n names; NaN under 10 names
+    window: 20
+    direction: negative
+  - name: dist_ema_20_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_ema_20 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 20
+    direction: negative
+  - name: dist_ema_50_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_ema_50 among the date's n names; NaN under 10 names
+    window: 50
+    direction: positive
+  - name: dist_ema_50_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_ema_50 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 50
+    direction: positive
+  - name: dist_ema_200_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_ema_200 among the date's n names; NaN under 10 names
+    window: 200
+    direction: positive
+  - name: dist_ema_200_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_ema_200 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 200
+    direction: positive
+  - name: slope_sma_20_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of slope_sma_20 among the date's n names; NaN under 10 names
+    window: 25
+    direction: positive
+  - name: slope_sma_20_z
+    kind: zscore
+    source: crosssection
+    formula: (slope_sma_20 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 25
+    direction: positive
+  - name: slope_sma_50_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of slope_sma_50 among the date's n names; NaN under 10 names
+    window: 55
+    direction: positive
+  - name: slope_sma_50_z
+    kind: zscore
+    source: crosssection
+    formula: (slope_sma_50 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 55
+    direction: positive
+  - name: slope_sma_200_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of slope_sma_200 among the date's n names; NaN under 10 names
+    window: 205
+    direction: positive
+  - name: slope_sma_200_z
+    kind: zscore
+    source: crosssection
+    formula: (slope_sma_200 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 205
+    direction: positive
+  - name: slope_ema_20_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of slope_ema_20 among the date's n names; NaN under 10 names
+    window: 25
+    direction: positive
+  - name: slope_ema_20_z
+    kind: zscore
+    source: crosssection
+    formula: (slope_ema_20 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 25
+    direction: positive
+  - name: slope_ema_50_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of slope_ema_50 among the date's n names; NaN under 10 names
+    window: 55
+    direction: positive
+  - name: slope_ema_50_z
+    kind: zscore
+    source: crosssection
+    formula: (slope_ema_50 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 55
+    direction: positive
+  - name: slope_ema_200_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of slope_ema_200 among the date's n names; NaN under 10 names
+    window: 205
+    direction: positive
+  - name: slope_ema_200_z
+    kind: zscore
+    source: crosssection
+    formula: (slope_ema_200 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 205
+    direction: positive
+  - name: rsi_14_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of rsi_14 among the date's n names; NaN under 10 names
+    window: 14
+    direction: negative
+  - name: rsi_14_z
+    kind: zscore
+    source: crosssection
+    formula: (rsi_14 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 14
+    direction: negative
+  - name: macd_pct_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of macd_pct among the date's n names; NaN under 10 names
+    window: 26
+    direction: positive
+  - name: macd_pct_z
+    kind: zscore
+    source: crosssection
+    formula: (macd_pct - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 26
+    direction: positive
+  - name: macd_signal_pct_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of macd_signal_pct among the date's n names; NaN under 10 names
+    window: 34
+    direction: positive
+  - name: macd_signal_pct_z
+    kind: zscore
+    source: crosssection
+    formula: (macd_signal_pct - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 34
+    direction: positive
+  - name: macd_hist_pct_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of macd_hist_pct among the date's n names; NaN under 10 names
+    window: 34
+    direction: positive
+  - name: macd_hist_pct_z
+    kind: zscore
+    source: crosssection
+    formula: (macd_hist_pct - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 34
+    direction: positive
+  - name: stoch_k_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of stoch_k among the date's n names; NaN under 10 names
+    window: 14
+    direction: negative
+  - name: stoch_k_z
+    kind: zscore
+    source: crosssection
+    formula: (stoch_k - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 14
+    direction: negative
+  - name: stoch_d_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of stoch_d among the date's n names; NaN under 10 names
+    window: 16
+    direction: negative
+  - name: stoch_d_z
+    kind: zscore
+    source: crosssection
+    formula: (stoch_d - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 16
+    direction: negative
+  - name: bb_pctb_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of bb_pctb among the date's n names; NaN under 10 names
+    window: 20
+    direction: negative
+  - name: bb_pctb_z
+    kind: zscore
+    source: crosssection
+    formula: (bb_pctb - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 20
+    direction: negative
+  - name: adv_eur_21_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of adv_eur_21 among the date's n names; NaN under 10 names
+    window: 21
+    direction: negative
+  - name: adv_eur_21_z
+    kind: zscore
+    source: crosssection
+    formula: (ln adv_eur_21 - mean) / std of ln adv_eur_21 across the date's names (ddof=0)
+    window: 21
+    direction: negative
+  - name: volume_z_63_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of volume_z_63 among the date's n names; NaN under 10 names
+    window: 64
+    direction: positive
+  - name: volume_z_63_z
+    kind: zscore
+    source: crosssection
+    formula: (volume_z_63 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 64
+    direction: positive
+  - name: obv_flow_21_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of obv_flow_21 among the date's n names; NaN under 10 names
+    window: 21
+    direction: positive
+  - name: obv_flow_21_z
+    kind: zscore
+    source: crosssection
+    formula: (obv_flow_21 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 21
+    direction: positive
+  - name: beta_252_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of beta_252 among the date's n names; NaN under 10 names
+    window: 252
+    direction: negative
+  - name: beta_252_z
+    kind: zscore
+    source: crosssection
+    formula: (beta_252 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: negative
+  - name: idio_vol_252_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of idio_vol_252 among the date's n names; NaN under 10 names
+    window: 252
+    direction: negative
+  - name: idio_vol_252_z
+    kind: zscore
+    source: crosssection
+    formula: (idio_vol_252 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: negative
+  - name: mom_resid_12_1_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mom_resid_12_1 among the date's n names; NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_resid_12_1_z
+    kind: zscore
+    source: crosssection
+    formula: (mom_resid_12_1 - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_12_1_sec_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mom_12_1_sec among the date's n names; NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_12_1_sec_z
+    kind: zscore
+    source: crosssection
+    formula: (mom_12_1_sec - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_6_1_sec_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mom_6_1_sec among the date's n names; NaN under 10 names
+    window: 126
+    direction: positive
+  - name: mom_6_1_sec_z
+    kind: zscore
+    source: crosssection
+    formula: (mom_6_1_sec - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 126
+    direction: positive
+  - name: mom_resid_12_1_sec_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of mom_resid_12_1_sec among the date's n names; NaN under 10 names
+    window: 252
+    direction: positive
+  - name: mom_resid_12_1_sec_z
+    kind: zscore
+    source: crosssection
+    formula: (mom_resid_12_1_sec - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 252
+    direction: positive
+  - name: rev_5d_sec_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of rev_5d_sec among the date's n names; NaN under 10 names
+    window: 5
+    direction: positive
+  - name: rev_5d_sec_z
+    kind: zscore
+    source: crosssection
+    formula: (rev_5d_sec - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 5
+    direction: positive
+  - name: vol_63d_sec_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of vol_63d_sec among the date's n names; NaN under 10 names
+    window: 63
+    direction: negative
+  - name: vol_63d_sec_z
+    kind: zscore
+    source: crosssection
+    formula: (vol_63d_sec - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 63
+    direction: negative
+  - name: dist_sma_200_sec_rank
+    kind: rank
+    source: crosssection
+    formula: (r - 1) / (n - 1), r the average rank of dist_sma_200_sec among the date's n names; NaN under 10 names
+    window: 200
+    direction: positive
+  - name: dist_sma_200_sec_z
+    kind: zscore
+    source: crosssection
+    formula: (dist_sma_200_sec - mean) / std across the date's names (ddof=0); NaN under 10 names
+    window: 200
+    direction: positive

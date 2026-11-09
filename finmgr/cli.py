@@ -6,7 +6,10 @@ Six subcommands make up the daily pipeline, in the order they run:
 
 `ingest` is real from day 11, and from day 14 records every run in
 `data/meta/ingest_runs.parquet` — `ingest --report` reads the last one back.
-`features`, `train`, `rank` and `report` are still stubs. Beside the pipeline, `coverage` (day 13)
+`train`, `rank` and `report` are still stubs; `features` (day 31) builds
+`data/features/panel.parquet` incrementally, `--full` from scratch, and checks
+it column for column against `finmgr/features/registry.yaml`. Beside the
+pipeline, `coverage` (day 13)
 reports what the store holds per ticker, and `actions` (day 15) ingests splits
 and dividends into `data/actions/` — `actions --show` prints them back out of
 the store — and `adjusted` (day 16) builds the back-adjusted close from both,
@@ -39,6 +42,7 @@ from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
+import pyarrow.parquet as pq
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -55,6 +59,7 @@ from finmgr.data import manifest as manifest_module
 from finmgr.data import quarantine as quarantine_module
 from finmgr.data import rates as rates_module
 from finmgr.data import universe as universe_module
+from finmgr.features import panel as panel_module
 
 app = typer.Typer(
     name="finmgr",
@@ -69,7 +74,6 @@ log = runlog.get_logger(__name__)
 # Which roadmap day turns each stub into a real command. Printed with the
 # stub message so it is obvious that nothing is missing by accident.
 _PLANNED = {
-    "features": "day 31",
     "train": "day 42",
     "rank": "day 49",
     "report": "day 57",
@@ -1029,9 +1033,55 @@ def _plot_against_benchmark(
 
 
 @app.command()
-def features() -> None:
-    """Build the feature panel from the stored bars."""
-    _not_implemented("features")
+def features(
+    full: bool = typer.Option(
+        False, "--full", help="Rebuild the whole panel from scratch instead of appending."
+    ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Read nothing dated after this (default: today)."
+    ),
+    check_only: bool = typer.Option(
+        False, "--check", help="Only check the stored panel against the registry; build nothing."
+    ),
+) -> None:
+    """Build the feature panel at data/features/panel.parquet from the stored bars.
+
+    Appends the dates since the last build (recomputing the last few, for late
+    bars); `--full` rebuilds every date. Every column is documented in
+    finmgr/features/registry.yaml, and the build fails if the two differ.
+    """
+    settings = load_settings()
+    if check_only:
+        path = panel_module.panel_path(settings=settings)
+        if not path.exists():
+            log.error("finmgr features --check: no panel at %s", path)
+            raise typer.Exit(code=1)
+        columns = [*panel_module.INDEX, *pq.read_schema(path).names]
+        columns = [c for c in dict.fromkeys(columns) if not c.startswith("__")]
+        try:
+            panel_module.check_registry(columns)
+        except panel_module.RegistryMismatch as exc:
+            log.error("finmgr features --check: %s", exc)
+            raise typer.Exit(code=1) from exc
+        meta = panel_module.panel_metadata(path)
+        console.print(
+            f"{path}: {len(columns)} columns match the registry "
+            f"(as of {meta.get('as_of')}, {meta.get('build')} build at {meta.get('built_at')})"
+        )
+        return
+    try:
+        point = store.as_date(as_of, "--as-of") or pit.LATEST
+        result = panel_module.build_panel(as_of=point, full=full, settings=settings)
+    except panel_module.RegistryMismatch as exc:
+        log.error("finmgr features: %s", exc)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    since = f", dates from {result.written_from} recomputed" if result.written_from else ""
+    console.print(
+        f"{result.mode} build: {result.rows} rows x {result.columns} columns "
+        f"({result.first} .. {result.last}{since}) -> {result.path}; registry matches"
+    )
 
 
 @app.command()
