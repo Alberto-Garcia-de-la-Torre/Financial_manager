@@ -1195,6 +1195,33 @@ dates, so pass `label_end=` and the purge uses each date's true label end.
 overlaps its test window, checked on the dates and by scrambling every price
 from the test start on and requiring that no training label moves.
 
+## Backtest engine
+
+`finmgr.backtest.engine` turns one score per ticker per day into a portfolio:
+every `hold` sessions it takes the top `top_k` names by score (ties broken by
+ticker), and marks the book to market in EUR every day.
+
+```python
+from finmgr.backtest.engine import run_backtest
+from finmgr.data.benchmarks import read_total_return
+prices = read_total_return(as_of="2026-10-15", start="2020-01-01")
+result = run_backtest(scores, prices, top_k=10, hold=21)   # scores: ticker, date, score
+result.equity      # date, equity_eur, cash_eur, n_names, rebalance
+result.positions   # date, ticker, shares, price_eur, value_eur, weight
+result.trades      # date, ticker, side, shares, price_eur, value_eur
+```
+
+On a rebalance date a held name still in the top K is not traded; names that
+dropped out are sold and the proceeds are split equally among the entrants
+(`reweight=True` resets the whole book to 1/K instead). A name can only be
+bought on a session it traded; a held name with no score that day keeps its
+place. Prices are the dividend-reinvested `adj_close_eur`, carried forward
+across another venue's sessions. v1 has no costs and fills at the close the
+score is dated — optimistic until day 36 adds frictions and next-open fills.
+`tests/test_engine.py` holds the acceptance test: a constant score reproduces
+equal-weight buy-and-hold — the same single round of buys, the same shares
+every day, the same equity to rounding — on one venue and two, for any `hold`.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
