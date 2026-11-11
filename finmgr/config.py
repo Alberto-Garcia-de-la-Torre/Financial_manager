@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from finmgr.backtest.costs import CostModel
+
 # The repo root: finmgr/config.py -> finmgr/ -> repo root. The package is
 # installed editable, so this points at the checkout rather than site-packages.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -73,6 +75,10 @@ class Settings(BaseModel):
     history_start: date = Field(
         default=date(2010, 1, 1),
         description="Earliest date the backfill asks for.",
+    )
+    costs: CostModel = Field(
+        default_factory=CostModel,
+        description="Backtest frictions: commission, spread, slippage (bps), liquidity scaling.",
     )
 
     @field_validator("data_dir", "universe_path", "benchmarks_path", "log_dir")

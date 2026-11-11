@@ -9,6 +9,9 @@ and for every holding period. "Exactly" means: the same trades (n buys on the
 first day, nothing after), the same share counts on every day, and the same
 equity to floating-point rounding (rtol 1e-12).
 
+These run in day 35's frictionless same-close mode (see `run_backtest` below);
+day 36's next-open fills and costs are tested in `tests/test_costs.py`.
+
 Around it: the top-K pick on a known score, the hold period, how entrants are
 funded, `reweight`, eligibility on a closed venue, and the input checks.
 """
@@ -21,16 +24,32 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from finmgr.backtest import engine
+from finmgr.backtest.costs import NO_COSTS
 from finmgr.backtest.engine import (
     EQUITY_COLUMNS,
     POSITION_COLUMNS,
     TRADE_COLUMNS,
     constant_scores,
-    run_backtest,
 )
 from finmgr.features.returns import venue_sessions
 
 D = dt.date
+
+
+def run_backtest(*args, **kwargs) -> engine.BacktestResult:
+    """Day 35's engine: free fills at the close the score is dated.
+
+    Day 36 made next-open fills and costs the default; these tests pin the
+    selection and bookkeeping rules, which do not depend on either, so they run
+    in the frictionless same-close mode (and on prices with no open column).
+    `tests/test_costs.py` covers the default.
+    """
+    kwargs.setdefault("fill", "close")
+    kwargs.setdefault("costs", NO_COSTS)
+    return engine.run_backtest(*args, **kwargs)
+
+
 NYSE = venue_sessions("XNYS", D(2023, 1, 1), D(2023, 12, 29))
 XETRA = venue_sessions("XETR", D(2023, 1, 1), D(2023, 12, 29))
 CAPITAL = 100_000.0

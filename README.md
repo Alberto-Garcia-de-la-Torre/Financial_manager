@@ -1216,11 +1216,43 @@ dropped out are sold and the proceeds are split equally among the entrants
 (`reweight=True` resets the whole book to 1/K instead). A name can only be
 bought on a session it traded; a held name with no score that day keeps its
 place. Prices are the dividend-reinvested `adj_close_eur`, carried forward
-across another venue's sessions. v1 has no costs and fills at the close the
-score is dated — optimistic until day 36 adds frictions and next-open fills.
-`tests/test_engine.py` holds the acceptance test: a constant score reproduces
-equal-weight buy-and-hold — the same single round of buys, the same shares
-every day, the same equity to rounding — on one venue and two, for any `hold`.
+across another venue's sessions.
+`tests/test_engine.py` holds day 35's acceptance test: a constant score
+reproduces equal-weight buy-and-hold — the same single round of buys, the same
+shares every day, the same equity to rounding — on one venue and two, for any
+`hold` (run in the frictionless same-close mode, `fill="close", costs=NO_COSTS`).
+
+### Costs and frictions
+
+The score dated t is computed from t's close, so the engine never trades at
+that close: every order is sized at t's marks and filled at the **next
+session's open** (`fill="next_open"`, the default), per name, sells before
+buys. `read_backtest_prices` supplies the EUR open, back-adjusted like the
+close, and `adv_eur_21`. Every fill pays a one-way cost from
+`finmgr.backtest.costs.CostModel`:
+
+    one_way_bps = commission_bps + (spread_bps / 2 + slippage_bps) * scale
+
+with `scale = liquidity_ref_eur / adv_eur_21` clipped to
+`[min_liquidity_scale, max_liquidity_scale]` when `liquidity_scaling` is on.
+Every number lives in the `costs:` section of `config/settings.yaml`
+(`CostModel.from_settings()`); `CostModel.flat(50)` is 50bps on every fill,
+`NO_COSTS` is free. Trades carry `cost_eur` and `decided` (the rebalance date
+the order came from); the equity frame carries the day's `cost_eur`.
+
+```python
+from finmgr.backtest.costs import CostModel, read_backtest_prices
+prices = read_backtest_prices(as_of="2026-10-15", start="2018-01-01")
+result = run_backtest(scores, prices, top_k=10, hold=21, costs=CostModel.from_settings())
+result.total_cost
+```
+
+`tests/test_costs.py` holds the acceptance test — at 50bps a rotating
+strategy's curve sits below the free one every day after the first fill, final
+equity falls monotonically through 0/5/10/25/50bps, and the euros lost match
+turnover x 50bps — and `tools/cost_sweep.py` runs the same sweep on the store:
+see `docs/costs.md`, where 50bps takes a placeholder momentum strategy from
+16.1% to 9.2% a year on 12.5x annual turnover.
 
 ## Command line
 

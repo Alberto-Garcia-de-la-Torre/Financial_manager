@@ -35,3 +35,16 @@ timezone: Europe/Madrid
 # How far back the backfill reaches. Roughly fifteen years of daily bars;
 # tickers younger than this simply start later.
 history_start: 2010-01-01
+
+# Backtest frictions (day 36), all in basis points of the traded notional.
+# One fill pays commission_bps + (spread_bps / 2 + slippage_bps) * scale, where
+# scale = liquidity_ref_eur / adv_eur_21 clipped to [min, max] when
+# liquidity_scaling is on (1 otherwise). Fills are at the next session's open.
+costs:
+  commission_bps: 5.0
+  spread_bps: 10.0
+  slippage_bps: 5.0
+  liquidity_scaling: true
+  liquidity_ref_eur: 100000000
+  min_liquidity_scale: 1.0
+  max_liquidity_scale: 10.0
