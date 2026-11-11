@@ -1170,6 +1170,31 @@ dates with fewer than 10 names. Labels are not in the feature panel and must
 never be model inputs. `tests/test_labels.py` holds the acceptance test: the
 label at t equals the daily returns of t+1 .. t+N compounded by hand.
 
+## Walk-forward splits
+
+`finmgr.backtest.splits` is the only way the project divides history into
+train and test. Never random k-fold: that trains on 2024 to score 2022.
+
+```python
+from finmgr.backtest.splits import label_end_dates, walk_forward_splits
+dates = sorted(labels["date"].unique())
+ends = label_end_dates(dates, 21, sessions)          # sessions: ticker -> venue sessions
+for split in walk_forward_splits(dates, horizon=21, test_size=63, label_end=ends):
+    train, test = split.select(labels)
+```
+
+Each test window lies strictly after its training window, and the windows move
+forward `step` dates at a time (default: one test window, so they tile). An
+embargo of at least the label horizon is skipped between the two — asking for
+less raises — and every training date whose label window `[t, end(t)]` reaches
+the first test date is purged, including the shared boundary price. On the
+panel's multi-venue date axis N sessions of one venue can span more than N
+dates, so pass `label_end=` and the purge uses each date's true label end.
+`train_size=None` expands from the first date; an integer rolls.
+`tests/test_splits.py` holds the acceptance test: no training label window
+overlaps its test window, checked on the dates and by scrambling every price
+from the test start on and requiring that no training label moves.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
