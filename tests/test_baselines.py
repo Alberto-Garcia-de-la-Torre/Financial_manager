@@ -180,3 +180,40 @@ def test_tables_render(run):
     assert "**Sharpe**" in table and "random p95" in table
     assert table.count("\n") == len(bl.TABLE_ROWS) + 1
     assert bl.random_distribution(run).count("|") == 3 * 8
+
+
+# ---------------------------------------------------------------------------
+# Day 39: intervals and the ledger
+# ---------------------------------------------------------------------------
+
+
+def test_every_named_baseline_gets_an_interval_around_its_sharpe(run):
+    intervals = bl.sharpe_intervals(run, n_boot=300)
+    assert set(intervals) == set(run.named)
+    for name, iv in intervals.items():
+        assert iv.point == pytest.approx(run.named[name].sharpe, rel=1e-12)
+        assert iv.low < iv.point < iv.high
+
+
+def test_bar_differences_are_paired_against_the_bar(run):
+    diffs = bl.bar_differences(run, n_boot=300)
+    if run.bar.source not in run.named:  # set by the random percentile
+        assert diffs == {}
+        return
+    assert set(diffs) == set(run.named) - {run.bar.source}
+    for name, iv in diffs.items():
+        expected = run.named[run.bar.source].sharpe - run.named[name].sharpe
+        assert iv.point == pytest.approx(expected, rel=1e-9)
+
+
+def test_record_trials_counts_candidates_once(run, tmp_path):
+    path = tmp_path / "trials.csv"
+    intervals = bl.sharpe_intervals(run, n_boot=100)
+    n = bl.record_trials(run, intervals, path=path)
+    assert n == len(run.bar.candidates) == 5  # four named + the random percentile
+    assert bl.record_trials(run, intervals, path=path) == n  # rerun: same variants
+    ledger = pd.read_csv(path)
+    assert (ledger["runs"] == 2).all()
+    # The window's end is not part of a variant; its start is.
+    params = bl.variant_params(run, bl.MOMENTUM)
+    assert "end" not in params and params["start"] == "2022-01-03"

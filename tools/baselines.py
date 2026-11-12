@@ -14,13 +14,24 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from finmgr.backtest import baselines as bl
+from finmgr.backtest.bootstrap import (
+    BLOCK,
+    LEVEL,
+    N_BOOT,
+    SEED,
+    SharpeInterval,
+    bootstrap_sharpe,
+    familywise_level,
+)
 from finmgr.backtest.costs import NO_COSTS, CostModel, read_backtest_prices
 from finmgr.backtest.engine import run_backtest
 from finmgr.backtest.metrics import backtest_metrics
+from finmgr.backtest.trials import LEDGER
 from finmgr.config import PROJECT_ROOT, load_settings
 from finmgr.data import pit
 from finmgr.data.benchmarks import benchmarks_dir, primary_benchmark
@@ -40,6 +51,9 @@ def main() -> None:
     parser.add_argument("--n-random", type=int, default=bl.N_RANDOM)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--out", type=Path, default=DOCS / "baselines.md")
+    parser.add_argument(
+        "--ledger", type=Path, default=LEDGER, help="variant ledger to log the candidates in"
+    )
     args = parser.parse_args()
 
     settings = load_settings()
@@ -72,6 +86,7 @@ def main() -> None:
     )
     elapsed = time.time() - t0
     gross = gross_check(prices, momentum, rf, result, start=args.start, end=end)
+    luck = Luck.measure(result, ledger=args.ledger)
 
     csv = args.out.with_name(args.out.stem + "_random.csv")
     result.random.round(6).to_csv(csv, index=False, lineterminator="\n")
@@ -83,11 +98,140 @@ def main() -> None:
             n_tickers=prices["ticker"].nunique(),
             csv=csv,
             gross=gross,
+            luck=luck,
+            ledger=args.ledger,
         )
     )
     print(bl.summary_table(result))
     print(f"\nbar: Sharpe {result.bar.sharpe:.3f} ({result.bar.source}); {elapsed:.0f}s")
+    print(
+        f"bar {luck.bar:.0%} interval: {luck.bar_interval}; "
+        f"{luck.n_variants} variants tested -> {luck.bar_familywise.level:.2%}: "
+        f"{luck.bar_familywise}"
+    )
     print(f"wrote {args.out} and {csv}")
+
+
+#: Block lengths for the sensitivity row: i.i.d., a week, a month, a quarter.
+BLOCKS = (1, 5, BLOCK, 63)
+
+
+@dataclass(frozen=True)
+class Luck:
+    """Day 39: every bootstrap number the page quotes."""
+
+    bar: float  # the nominal level, 0.95
+    intervals: dict[str, SharpeInterval]
+    differences: dict[str, SharpeInterval]
+    by_block: dict[int, SharpeInterval]
+    n_variants: int
+    bar_familywise: SharpeInterval
+
+    @property
+    def bar_interval(self) -> SharpeInterval:
+        return self.by_block[BLOCK]
+
+    @classmethod
+    def measure(cls, result: bl.Baselines, *, ledger: Path) -> Luck:
+        intervals = bl.sharpe_intervals(result)
+        n_variants = bl.record_trials(result, intervals, path=ledger)
+        source = result.bar.source
+        # Bars set by the random percentile have no one series; use the best named one.
+        top = (
+            source if source in result.excess else max(intervals, key=lambda k: intervals[k].point)
+        )
+        excess = result.excess[top]
+        by_block = {b: bootstrap_sharpe(excess, periods=result.periods, block=b) for b in BLOCKS}
+        familywise = bootstrap_sharpe(
+            excess, periods=result.periods, level=familywise_level(LEVEL, n_variants)
+        )
+        return cls(
+            bar=LEVEL,
+            intervals=intervals,
+            differences=bl.bar_differences(result),
+            by_block=by_block,
+            n_variants=n_variants,
+            bar_familywise=familywise,
+        )
+
+    def render(self, result: bl.Baselines, ledger: Path) -> str:
+        pct = f"{self.bar:.0%}"
+        fw = self.bar_familywise
+        rows = "\n".join(
+            f"| {name} | {iv.point:.2f} | {iv.low:.2f} | {iv.high:.2f} | {iv.se:.2f} "
+            f"| {iv.p_le_zero:.1%} |"
+            for name, iv in sorted(self.intervals.items(), key=lambda kv: -kv[1].point)
+        )
+        blocks = "\n".join(
+            f"| {b} | {iv.low:.2f} | {iv.high:.2f} | {iv.se:.2f} |"
+            for b, iv in self.by_block.items()
+        )
+        diffs = "\n".join(
+            f"| {result.bar.source} minus {name} | {iv.point:+.2f} | {iv.low:+.2f} "
+            f"| {iv.high:+.2f} | {iv.p_le_zero:.1%} |"
+            for name, iv in self.differences.items()
+        )
+        try:
+            shown = ledger.relative_to(PROJECT_ROOT)
+        except ValueError:
+            shown = ledger
+        return f"""## How lucky was that? (day 39)
+
+Every Sharpe on this page is one draw. The intervals below come from a
+circular block bootstrap of the daily excess returns
+(`finmgr/backtest/bootstrap.py`): {N_BOOT:,} resamples, blocks of {BLOCK}
+sessions (one holding period, so a rebalance cycle's autocorrelation and
+volatility clustering survive the resampling), seed {SEED}, percentile
+intervals. The point is exactly the Sharpe in the tables above.
+
+### Sharpe as an interval ({pct})
+
+| Baseline | Sharpe | {pct} low | {pct} high | Bootstrap s.e. | P(Sharpe ≤ 0) |
+|---|---:|---:|---:|---:|---:|
+{rows}
+
+The random top-K books have no interval of their own here: their 200 runs
+*are* the luck distribution, shown in the percentiles above.
+
+### Does the bar actually beat the others?
+
+Paired: both curves resampled on the same blocks of dates, so what they have
+in common cancels. An interval that straddles zero means the data cannot tell
+the two apart.
+
+| Difference | Sharpe | {pct} low | {pct} high | P(diff ≤ 0) |
+|---|---:|---:|---:|---:|
+{diffs}
+
+### Block length
+
+The bar's {pct} interval for other block lengths (1 is plain i.i.d.
+resampling). Longer blocks keep more dependence and usually widen it.
+
+| Block (sessions) | {pct} low | {pct} high | s.e. |
+|---:|---:|---:|---:|
+{blocks}
+
+### Variants tested so far: {self.n_variants}
+
+`{shown}` counts every strategy variant ever backtested and compared,
+one row per family + defining parameters (`finmgr/backtest/trials.py`).
+Rerunning a variant updates its row; changing any parameter adds one, and
+rows are never removed. The random runs count as one variant (the
+percentile that competes), not 200.
+
+The bar is the best of {self.n_variants} variants, so quoting its {pct} interval
+alone would flatter it. Holding all {self.n_variants} intervals jointly at
+{pct} (Bonferroni) means quoting each at **{fw.level:.2%}**:
+
+> **Bar Sharpe {fw.point:.2f}, {fw.level:.2%} interval [{fw.low:.2f}, {fw.high:.2f}]**
+> ({self.n_variants} variants tested).
+
+Every model trained from here on adds to the count, and the familywise level
+rises with it. Quote a model's Sharpe the same way: as an interval at the
+familywise level for the count *at the time*, and with its paired difference
+against the bar.
+"""
 
 
 def gross_check(prices, momentum, rf, result: bl.Baselines, *, start, end) -> str:
@@ -122,7 +266,15 @@ def gross_check(prices, momentum, rf, result: bl.Baselines, *, start, end) -> st
 
 
 def render(
-    result: bl.Baselines, *, bench: str, as_of: date, n_tickers: int, csv: Path, gross: str
+    result: bl.Baselines,
+    *,
+    bench: str,
+    as_of: date,
+    n_tickers: int,
+    csv: Path,
+    gross: str,
+    luck: Luck,
+    ledger: Path = LEDGER,
 ) -> str:
     any_metrics = next(iter(result.named.values()))
     c = result.costs
@@ -134,6 +286,8 @@ def render(
         for name, sharpe in sorted(result.bar.candidates.items(), key=lambda kv: -kv[1])
     )
     first, last = any_metrics.start, any_metrics.end
+    iv = luck.bar_interval
+    fw = luck.bar_familywise
     n_random = len(result.random)
     scale = f"[{c.min_liquidity_scale:g}, {c.max_liquidity_scale:g}]"
     setup = "\n".join(
@@ -164,7 +318,7 @@ def render(
             ),
         ]
     )
-    return f"""# Baselines (day 38)
+    return f"""# Baselines (days 38 and 39)
 
 Generated by `tools/baselines.py --as-of {as_of}` from the local store; the
 code is `finmgr/backtest/baselines.py`. Rerun it after any change to the
@@ -172,14 +326,17 @@ engine, costs, metrics or data, and update this page.
 
 ## The bar
 
-> **Sharpe {result.bar.sharpe:.2f}** (against €STR/EONIA, {any_metrics.start} →
+> **Sharpe {iv.point:.2f}, {iv.level:.0%} interval [{iv.low:.2f}, {iv.high:.2f}]**;
+> **[{fw.low:.2f}, {fw.high:.2f}] at {fw.level:.2%}**, the familywise level for the
+> {luck.n_variants} variants tested so far (against €STR/EONIA, {any_metrics.start} →
 > {any_metrics.end}, top {result.top_k}, held {result.hold} sessions, configured
-> costs, next-open fills). Set by: *{result.bar.source}*.
+> costs, next-open fills, block bootstrap of {iv.block} sessions). Set by:
+> *{result.bar.source}*.
 >
 > A model is worth keeping only if, run through the same engine on the same
-> window with the same costs, its Sharpe is above {result.bar.sharpe:.2f}. Day 39
-> turns this point into an interval; until then, clearing it by a hair is
-> not clearing it.
+> window with the same costs, it beats {result.bar.sharpe:.2f} *and* the paired
+> bootstrap interval on its Sharpe minus the bar's lies above zero. Clearing
+> the point by a hair is not clearing it: the interval is how wide a hair is.
 
 | Candidate | Sharpe |
 |---|---:|
@@ -226,6 +383,7 @@ So most of the gap between the random books and equal weight is costs, not
 bad luck in picking: a model that trades as often as a random book starts
 several points of CAGR behind.
 
+{luck.render(result, ledger)}
 ## Caveats
 
 * **Survivorship.** The universe is today's 100 large caps, chosen knowing
@@ -240,9 +398,9 @@ several points of CAGR behind.
 * **Momentum is a baseline, not a model.** It is the plainest known signal,
   run untuned: no volatility scaling, no sector neutralisation, no crash
   protection.
-* **One window, one point estimate.** These are full-period numbers, not
-  per-split numbers; day 39 adds bootstrap intervals and the count of
-  variants tested.
+* **One window.** These are full-period numbers, not per-split numbers. The
+  bootstrap resamples days within this window; it cannot say how a regime
+  the window never saw would have gone.
 """
 
 

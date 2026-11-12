@@ -39,13 +39,21 @@ from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from finmgr.backtest.bootstrap import (
+    SharpeInterval,
+    bootstrap_sharpe,
+    bootstrap_sharpe_difference,
+    result_excess,
+)
 from finmgr.backtest.costs import CostModel
 from finmgr.backtest.engine import BacktestResult, constant_scores, run_backtest
 from finmgr.backtest.metrics import Metrics, backtest_metrics, year_fraction
+from finmgr.backtest.trials import LEDGER, count_variants, record
 
 #: What a model will be: top 10, held a month.
 TOP_K = 10
@@ -142,6 +150,10 @@ class Baselines:
     costs: CostModel
     #: Named baseline -> its full engine result, for plots and tearsheets.
     results: dict[str, BacktestResult] = field(default_factory=dict, repr=False)
+    #: Named baseline -> the daily excess returns its Sharpe is computed from.
+    excess: dict[str, pd.Series] = field(default_factory=dict, repr=False)
+    #: The first rebalance date the runs were given.
+    start: date | str | None = None
 
 
 # Worker state for the random runs: set once per process, not pickled per task.
@@ -235,7 +247,95 @@ def run_baselines(
         periods=periods,
         costs=model,
         results=results,
+        excess={name: result_excess(r, rf) for name, r in results.items()},
+        start=start,
     )
+
+
+# ---------------------------------------------------------------------------
+# Day 39: intervals and the variant count
+# ---------------------------------------------------------------------------
+
+
+def sharpe_intervals(baselines: Baselines, **kwargs: object) -> dict[str, SharpeInterval]:
+    """Block-bootstrap interval on every named baseline's Sharpe.
+
+    `kwargs` go to :func:`~finmgr.backtest.bootstrap.bootstrap_sharpe`
+    (`block`, `n_boot`, `level`, `seed`); annualisation is the axis's.
+    """
+    return {
+        name: bootstrap_sharpe(excess, periods=baselines.periods, **kwargs)
+        for name, excess in baselines.excess.items()
+    }
+
+
+def bar_differences(baselines: Baselines, **kwargs: object) -> dict[str, SharpeInterval]:
+    """Interval on Sharpe(bar) - Sharpe(other) for every other named baseline, paired blocks.
+
+    Only defined when the bar is set by a named baseline (not the random
+    percentile, which has no single return series).
+    """
+    source = baselines.bar.source
+    if source not in baselines.excess:
+        return {}
+    top = baselines.excess[source]
+    return {
+        name: bootstrap_sharpe_difference(top, other, periods=baselines.periods, **kwargs)
+        for name, other in baselines.excess.items()
+        if name != source
+    }
+
+
+def variant_params(baselines: Baselines, name: str) -> dict[str, object]:
+    """What defines a baseline as a variant for :mod:`finmgr.backtest.trials`."""
+    common = {
+        "start": str(baselines.start),
+        "hold": baselines.hold,
+        "costs": baselines.costs.model_dump(),
+    }
+    specific: dict[str, object] = {
+        BENCHMARK: {"scores": "constant", "universe": "benchmark", "top_k": 1},
+        EQUAL_WEIGHT: {"scores": "constant", "top_k": "all", "reweight": False},
+        EQUAL_WEIGHT_REBALANCED: {"scores": "constant", "top_k": "all", "reweight": True},
+        MOMENTUM: {"scores": MOMENTUM_COLUMN, "top_k": baselines.top_k},
+    }.get(name, {})
+    if name.startswith(RANDOM):
+        specific = {
+            "scores": "uniform noise",
+            "top_k": baselines.top_k,
+            "seeds": len(baselines.random),
+            "quantile": RANDOM_QUANTILE,
+        }
+    return {**common, **specific}
+
+
+def record_trials(
+    baselines: Baselines,
+    intervals: Mapping[str, SharpeInterval],
+    *,
+    path: Path = LEDGER,
+    today: date | None = None,
+) -> int:
+    """Log every bar candidate in the variant ledger; returns the ledger's variant count.
+
+    The random runs are logged as one variant, the percentile that competes
+    for the bar: they are the null distribution, not 200 strategies to pick
+    the best of.
+    """
+    for name, sharpe in baselines.bar.candidates.items():
+        iv = intervals.get(name)
+        record(
+            f"baseline: {name}",
+            variant_params(baselines, name),
+            sharpe=sharpe,
+            low=iv.low if iv else math.nan,
+            high=iv.high if iv else math.nan,
+            level=iv.level if iv else math.nan,
+            source="tools/baselines.py",
+            today=today,
+            path=path,
+        )
+    return count_variants(path)
 
 
 # ---------------------------------------------------------------------------
