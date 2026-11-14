@@ -1254,6 +1254,33 @@ turnover x 50bps — and `tools/cost_sweep.py` runs the same sweep on the store:
 see `docs/costs.md`, where 50bps takes a placeholder momentum strategy from
 16.1% to 9.2% a year on 12.5x annual turnover.
 
+### Tearsheet: `finmgr backtest --report`
+
+```bash
+finmgr backtest --strategy momentum --report          # writes and opens the page
+finmgr backtest --strategy equal-weight               # metrics table only, no page
+finmgr backtest -s random --seed 3 --top-k 20 --report --no-open --out /tmp/r.html
+```
+
+`--strategy` is one of day 38's baselines — `momentum`, `equal-weight`,
+`equal-weight-rebalanced`, `benchmark`, `random` — run exactly as
+`tools/baselines.py` runs it (`finmgr/backtest/strategy.py`): configured costs,
+next-open fills, first decision 2011-03-01, the benchmark held on the same date
+axis. So the numbers match `docs/baselines.md`. Every run is logged in
+`docs/trials.csv` under the same variant id as day 38's, so the default
+momentum run is a rerun (count unchanged); a different `--top-k`, `--hold` or
+`--start` is a new variant and raises the count.
+
+`--report` writes `data/reports/backtest_<strategy>_<as-of>.html` and opens it
+in the default browser. The page (`finmgr/report/tearsheet.py`) is one
+self-contained file with no external assets and no JavaScript. It shows
+headline tiles (CAGR, Sharpe *with its block-bootstrap interval*, max
+drawdown, the paired Sharpe difference against the benchmark), the equity curve
+against the benchmark on a log scale, both drawdowns, the rolling 12-month
+Sharpe, a monthly return heatmap with calendar-year columns for the strategy
+and the benchmark, the full metrics table including the Sharpe at the
+familywise level for the current variant count, and how the run was set up.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -1285,7 +1312,9 @@ exchange calendar (see "Exchange calendars" above). `finmgr fx` (day 18)
 ingests the EUR crosses and writes `close_eur` (see "One currency" above).
 `finmgr benchmarks` (day 22) ingests the benchmark ETFs and the euro short
 rate, and `--plot` draws the 100 against the benchmark (see "Benchmarks and
-the risk-free rate" above).
+the risk-free rate" above). `finmgr backtest` (day 40) runs one strategy
+against the benchmark and `--report` turns it into an HTML tearsheet (see
+"Tearsheet" above).
 
 `--log-level` is a global option, so it goes before the subcommand:
 

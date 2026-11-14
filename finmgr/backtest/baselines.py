@@ -288,22 +288,43 @@ def bar_differences(baselines: Baselines, **kwargs: object) -> dict[str, SharpeI
 
 def variant_params(baselines: Baselines, name: str) -> dict[str, object]:
     """What defines a baseline as a variant for :mod:`finmgr.backtest.trials`."""
-    common = {
-        "start": str(baselines.start),
-        "hold": baselines.hold,
-        "costs": baselines.costs.model_dump(),
-    }
+    return baseline_params(
+        name,
+        start=baselines.start,
+        hold=baselines.hold,
+        costs=baselines.costs,
+        top_k=baselines.top_k,
+        n_random=len(baselines.random),
+    )
+
+
+def baseline_params(
+    name: str,
+    *,
+    start: date | str | None,
+    hold: int,
+    costs: CostModel,
+    top_k: int,
+    n_random: int = N_RANDOM,
+) -> dict[str, object]:
+    """:func:`variant_params` without a :class:`Baselines`: what `finmgr backtest` logs.
+
+    Same inputs, same dict, same variant id — so a one-off `finmgr backtest
+    --strategy momentum` at day 38's settings is a rerun of day 38's variant,
+    not a new one.
+    """
+    common = {"start": str(start), "hold": hold, "costs": costs.model_dump()}
     specific: dict[str, object] = {
         BENCHMARK: {"scores": "constant", "universe": "benchmark", "top_k": 1},
         EQUAL_WEIGHT: {"scores": "constant", "top_k": "all", "reweight": False},
         EQUAL_WEIGHT_REBALANCED: {"scores": "constant", "top_k": "all", "reweight": True},
-        MOMENTUM: {"scores": MOMENTUM_COLUMN, "top_k": baselines.top_k},
+        MOMENTUM: {"scores": MOMENTUM_COLUMN, "top_k": top_k},
     }.get(name, {})
     if name.startswith(RANDOM):
         specific = {
             "scores": "uniform noise",
-            "top_k": baselines.top_k,
-            "seeds": len(baselines.random),
+            "top_k": top_k,
+            "seeds": n_random,
             "quantile": RANDOM_QUANTILE,
         }
     return {**common, **specific}

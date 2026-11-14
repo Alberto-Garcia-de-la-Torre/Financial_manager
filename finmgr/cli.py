@@ -24,7 +24,9 @@ row that register calls bad-data from reads — flagged in the store, recorded
 with its reason in `data/quarantine/`, never deleted. `benchmarks` (day 22)
 ingests SPY, MSCI World, STOXX 600 and IBEX 35 ETFs into `data/benchmarks/`
 and the euro overnight rate into `data/rates/`; `benchmarks --plot` draws all
-100 against the benchmark on one chart. Each stub prints what it will do and
+100 against the benchmark on one chart. `backtest` (day 40) runs one of day
+38's strategies against the benchmark and `--report` writes and opens an HTML
+tearsheet of it under `data/reports/`. Each stub prints what it will do and
 exits non-zero, so nothing downstream can mistake "not written yet" for "ran
 successfully".
 
@@ -37,6 +39,7 @@ itself, so the closing line gets written even when a command fails or raises.
 from __future__ import annotations
 
 import sys
+import webbrowser
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
@@ -48,6 +51,8 @@ from rich.console import Console
 from rich.table import Table
 
 from finmgr import runlog
+from finmgr.backtest import strategy as strategy_module
+from finmgr.backtest.costs import CostModel
 from finmgr.config import Settings, load_settings
 from finmgr.data import actions as actions_module
 from finmgr.data import adjcheck, calendars, pit, quality, store
@@ -61,6 +66,7 @@ from finmgr.data import rates as rates_module
 from finmgr.data import universe as universe_module
 from finmgr.features import hygiene as hygiene_module
 from finmgr.features import panel as panel_module
+from finmgr.report import tearsheet as tearsheet_module
 
 app = typer.Typer(
     name="finmgr",
@@ -1125,6 +1131,97 @@ def _feature_hygiene(settings: Settings, report_path: Path) -> None:
         for problem in result.problems:
             log.error("finmgr features --hygiene: %s", problem)
         raise typer.Exit(code=1)
+
+
+@app.command()
+def backtest(
+    strategy: str = typer.Option(
+        "momentum",
+        "--strategy",
+        "-s",
+        help="One of: " + ", ".join(strategy_module.STRATEGIES) + ".",
+    ),
+    report: bool = typer.Option(
+        False, "--report", help="Write the HTML tearsheet and open it in the browser."
+    ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Read nothing dated after this (default: today)."
+    ),
+    start: str = typer.Option(
+        strategy_module.DEFAULT_START, "--start", help="First rebalance date."
+    ),
+    end: str | None = typer.Option(
+        None, "--end", help="Last date (default: the last universe price)."
+    ),
+    top_k: int = typer.Option(strategy_module.bl.TOP_K, "--top-k", min=1),
+    hold: int = typer.Option(strategy_module.bl.HOLD, "--hold", min=1),
+    seed: int = typer.Option(0, "--seed", help="Seed for --strategy random."),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="Where --report writes (default: data/reports/backtest_<strategy>_<as-of>.html).",
+    ),
+    open_page: bool = typer.Option(
+        True, "--open/--no-open", help="Open the --report page in the default browser."
+    ),
+) -> None:
+    """Backtest one strategy against the benchmark; --report turns it into an HTML tearsheet.
+
+    Runs exactly as day 38's baselines do — configured costs, next-open fills,
+    the benchmark held on the same axis — and logs the run in docs/trials.csv.
+    """
+    if strategy not in strategy_module.STRATEGIES:
+        raise typer.BadParameter(
+            f"unknown strategy {strategy!r}; choose from {', '.join(strategy_module.STRATEGIES)}",
+            param_hint="--strategy",
+        )
+    settings = load_settings()
+    try:
+        point = store.as_date(as_of, "--as-of") or pit.LATEST
+        last = store.as_date(end, "--end")
+        inputs = strategy_module.load_inputs(
+            as_of=point, end=last, momentum=strategy == "momentum", settings=settings
+        )
+        run = strategy_module.run_strategy(
+            strategy,
+            inputs,
+            start=start,
+            top_k=top_k,
+            hold=hold,
+            costs=CostModel.from_settings(settings),
+            seed=seed,
+        )
+    except ValueError as exc:
+        log.error("finmgr backtest: %s", exc)
+        raise typer.Exit(code=1) from exc
+    logged = strategy_module.log_run(run)
+
+    m, b, iv = run.metrics, run.benchmark_metrics, run.interval
+    table = Table(title=f"{run.label} vs {run.benchmark_ticker}, {m.start} to {m.end}")
+    table.add_column("")
+    table.add_column(run.label, justify="right")
+    table.add_column(run.benchmark_ticker, justify="right")
+    for label, field, fmt in tearsheet_module.METRIC_ROWS:
+        table.add_row(label, fmt(getattr(m, field)), fmt(getattr(b, field)))
+    console.print(table)
+    fw = logged.familywise
+    console.print(
+        f"Sharpe {iv.point:.2f}, {iv.level:.0%} interval [{iv.low:.2f}, {iv.high:.2f}]; "
+        f"{logged.n_variants} variants tested -> {fw.level:.2%} interval "
+        f"[{fw.low:.2f}, {fw.high:.2f}]"
+    )
+    if not report:
+        return
+    path = (
+        Path(out)
+        if out
+        else settings.data_dir / "reports" / tearsheet_module.default_name(strategy, run.as_of)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(tearsheet_module.render_tearsheet(run, logged), encoding="utf-8")
+    console.print(f"tearsheet -> {path}")
+    if open_page and not webbrowser.open(path.resolve().as_uri()):
+        log.warning("finmgr backtest: no browser to open; the page is at %s", path)
 
 
 @app.command()
