@@ -34,6 +34,8 @@ dependencies = [
     # The ECB data portal, for the risk-free rate (day 22). Already present
     # through yfinance; pinned here because finmgr imports it directly.
     "requests==2.34.2",
+    # Gradient boosting (day 41 registers it as `--model lgbm`, day 43 trains it).
+    "lightgbm==4.7.0",
 ]
 
 [project.optional-dependencies]

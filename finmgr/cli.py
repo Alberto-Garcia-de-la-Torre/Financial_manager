@@ -6,7 +6,7 @@ Six subcommands make up the daily pipeline, in the order they run:
 
 `ingest` is real from day 11, and from day 14 records every run in
 `data/meta/ingest_runs.parquet` — `ingest --report` reads the last one back.
-`train`, `rank` and `report` are still stubs; `features` (day 31) builds
+`rank` and `report` are still stubs; `features` (day 31) builds
 `data/features/panel.parquet` incrementally, `--full` from scratch, and checks
 it column for column against `finmgr/features/registry.yaml`. Beside the
 pipeline, `coverage` (day 13)
@@ -26,7 +26,10 @@ ingests SPY, MSCI World, STOXX 600 and IBEX 35 ETFs into `data/benchmarks/`
 and the euro overnight rate into `data/rates/`; `benchmarks --plot` draws all
 100 against the benchmark on one chart. `backtest` (day 40) runs one of day
 38's strategies against the benchmark and `--report` writes and opens an HTML
-tearsheet of it under `data/reports/`. Each stub prints what it will do and
+tearsheet of it under `data/reports/`. `train` (day 41) resolves `--model`
+through the model registry in `finmgr/models/` — `--list` shows what is
+registered, `--dry-run` stops after printing the resolved model — and is still
+a stub past that point until day 42. Each stub prints what it will do and
 exits non-zero, so nothing downstream can mistake "not written yet" for "ran
 successfully".
 
@@ -42,14 +45,16 @@ import sys
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
+from finmgr import models as models_module
 from finmgr import runlog
 from finmgr.backtest import strategy as strategy_module
 from finmgr.backtest.costs import CostModel
@@ -1224,9 +1229,69 @@ def backtest(
         log.warning("finmgr backtest: no browser to open; the page is at %s", path)
 
 
+def _parse_params(pairs: list[str]) -> dict[str, Any]:
+    """``["alpha=10", "fit_intercept=false"]`` -> ``{"alpha": 10, "fit_intercept": False}``."""
+    params: dict[str, Any] = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key.strip():
+            raise typer.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint="--param")
+        # YAML scalars, so numbers and booleans arrive typed: 10 -> int, 0.1 -> float.
+        params[key.strip()] = yaml.safe_load(raw) if raw.strip() else None
+    return params
+
+
 @app.command()
-def train() -> None:
-    """Train a model walk-forward on the feature panel."""
+def train(
+    model_name: str = typer.Option(
+        "ridge", "--model", "-m", help="Registered model name; --list shows them."
+    ),
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param", "-p", help="Hyperparameter override KEY=VALUE; repeat for several."
+        ),
+    ] = None,
+    list_models: bool = typer.Option(
+        False, "--list", help="List the registered models with their defaults and exit."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Resolve and print the model, then stop before training."
+    ),
+) -> None:
+    """Train a model walk-forward on the feature panel.
+
+    The model is looked up by name in the registry (finmgr/models), so any
+    registered model is one --model away. Walk-forward training lands on day 42.
+    """
+    if list_models:
+        table = Table(title="Registered models")
+        table.add_column("name")
+        table.add_column("class")
+        table.add_column("default parameters")
+        for name in models_module.available():
+            cls = models_module.resolve(name)
+            defaults = ", ".join(f"{k}={v}" for k, v in cls.defaults.items())
+            table.add_row(name, cls.__name__, defaults)
+        console.print(table)
+        return
+    params = _parse_params(param or [])
+    try:
+        model = models_module.create(model_name, **params)
+    except models_module.UnknownModel as exc:
+        raise typer.BadParameter(str(exc), param_hint="--model") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--param") from exc
+
+    table = Table(title=f"model {model.name!r} ({type(model).__name__})")
+    table.add_column("parameter")
+    table.add_column("value", justify="right")
+    for key, value in model.params.items():
+        table.add_row(key, repr(value))
+    console.print(table)
+    log.info("finmgr train: resolved %r -> %r", model_name, model)
+    if dry_run:
+        return
     _not_implemented("train")
 
 

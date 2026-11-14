@@ -1281,6 +1281,45 @@ Sharpe, a monthly return heatmap with calendar-year columns for the strategy
 and the benchmark, the full metrics table including the Sharpe at the
 familywise level for the current variant count, and how the run was set up.
 
+## Models
+
+### The model interface and registry
+
+Every learned model implements one small protocol in `finmgr/models/base.py`:
+a `name`, a `params` dict (every hyperparameter, defaults included), `fit(X, y)`
+and `predict(X)` returning one score per row. The walk-forward harness only
+ever talks to that surface, and only ever gets a model by name from the
+registry in `finmgr/models/registry.py`:
+
+```python
+from finmgr import models
+
+models.available()                         # ['lgbm', 'ridge']
+model = models.create("ridge", alpha=10.0)
+model.fit(X_train, y_train).predict(X_test)
+```
+
+`EstimatorModel` wraps any scikit-learn style estimator and adds the checks no
+model should have to remember: `predict` before `fit` raises, `predict` on a
+different feature set (missing, extra or reordered columns) raises, and a
+misspelt hyperparameter raises instead of being ignored. Two models are
+registered: `ridge` (scikit-learn `Ridge`, day 42 trains it) and `lgbm`
+(LightGBM, single-threaded and seeded so reruns reproduce exactly; day 43
+trains it). Adding a model means one module with `@register("name")` and one
+import line in `finmgr/models/__init__.py`.
+
+From the command line, `--model` resolves through the same registry:
+
+```bash
+finmgr train --list                                   # registered models and defaults
+finmgr train --model ridge --dry-run                  # resolve and print, train nothing
+finmgr train --model lgbm -p n_estimators=50 -p learning_rate=0.1 --dry-run
+```
+
+An unknown model or parameter is a usage error (exit 2) that names the valid
+choices. Without `--dry-run`, `train` is still a stub that exits 1 until day 42
+adds walk-forward training.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -1300,7 +1339,9 @@ finmgr --help
 `ingest` is real from day 11 — see "Ingesting the universe" above, and
 `finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
 quality checks" above), and `quarantine` (day 20) sits right after it. `features` is real from day 31
-(see "The feature panel" above). The other three are stubs: each prints
+(see "The feature panel" above). `train` resolves `--model` through the model
+registry from day 41 (see "Models" above) but trains nothing until day 42.
+It and the other two are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what
