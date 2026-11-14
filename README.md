@@ -1317,8 +1317,43 @@ finmgr train --model lgbm -p n_estimators=50 -p learning_rate=0.1 --dry-run
 ```
 
 An unknown model or parameter is a usage error (exit 2) that names the valid
-choices. Without `--dry-run`, `train` is still a stub that exits 1 until day 42
-adds walk-forward training.
+choices.
+
+### Training walk-forward (day 42)
+
+Without `--dry-run`, `train` fits the model walk-forward and puts it next to
+the baselines:
+
+```bash
+finmgr train --model ridge --as-of 2026-11-12 --report --doc docs/models/ridge.md
+```
+
+1. **Data** (`finmgr/models/walkforward.py`): the day 32 model features as
+   per-date ranks from the panel (a missing rank becomes 0.5, "no
+   information"), and the day 33 label `fwd_xs_21d`, the next 21 sessions'
+   return minus the universe mean.
+2. **Walk-forward**: purged, embargoed splits from day 34. The training window
+   expands, the model is refitted every 63 dates (`--test-size`), and the first
+   fold needs 200 training dates (`--min-train`), so predictions start before
+   day 38's window does. A fresh model is built from the registry for each
+   fold. Only test-window predictions become scores.
+3. **Backtest**: the scores go through `strategy.run_scores`, the path
+   `finmgr backtest` uses: same engine, window (from 2011-03-01), top 10,
+   21-session hold, configured costs, next-open fills.
+4. **Comparison** (`finmgr/models/compare.py`): day 38's named baselines are
+   re-run on the same inputs. The random books' 95th percentile comes from
+   `docs/baselines_random.csv` when its window matches. Each row gets its
+   Sharpe interval and a paired Sharpe difference against the model, and the
+   verdict uses day 38's bar.
+5. **Ledger**: the run is logged in `docs/trials.csv` under
+   `model: <name>, walk-forward`.
+
+`--report` writes `data/reports/train_<model>_<as-of>.html`: the day 40
+tearsheet plus two sections, "Against the baselines" and "What the model
+learnt" (ridge's weights in every fold and the out-of-sample rank IC).
+`--doc` writes the same comparison as Markdown. **Ridge's result is in
+[`docs/models/ridge.md`](docs/models/ridge.md):** Sharpe 0.89 [0.38, 1.43]
+against a bar of 1.08, so it does not beat the bar.
 
 ## Command line
 
@@ -1339,9 +1374,8 @@ finmgr --help
 `ingest` is real from day 11 — see "Ingesting the universe" above, and
 `finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
 quality checks" above), and `quarantine` (day 20) sits right after it. `features` is real from day 31
-(see "The feature panel" above). `train` resolves `--model` through the model
-registry from day 41 (see "Models" above) but trains nothing until day 42.
-It and the other two are stubs: each prints
+(see "The feature panel" above). `train` is real from day 42 (see "Training
+walk-forward" above). `rank` and `report` are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what

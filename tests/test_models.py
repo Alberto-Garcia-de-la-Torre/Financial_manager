@@ -166,6 +166,15 @@ def test_train_lists_the_registry(cli):
     assert "RidgeModel" in result.output and "LGBMModel" in result.output
 
 
-def test_train_without_dry_run_is_still_a_stub_that_fails(cli):
+def test_train_without_a_feature_panel_fails_cleanly(cli, monkeypatch):
+    # Day 42 made `train` real (tests/test_walkforward.py drives it end to end);
+    # with no panel in the store it must fail with a message, not a traceback.
+    from finmgr.models import walkforward
+
+    def no_panel(**_):
+        raise FileNotFoundError("no feature panel; run `finmgr features --full`")
+
+    monkeypatch.setattr(walkforward, "load_dataset", no_panel)
     result = cli.invoke(app, ["train", "--model", "ridge"])
     assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)

@@ -31,6 +31,15 @@ doing nothing; below equal weight, worse than not choosing; below the random
 95th percentile, indistinguishable from a lucky draw; below 12-1 momentum, it
 adds nothing to a one-line rule.
 
+### Models measured against it
+
+Each model has a page under `docs/models/`, written by
+`finmgr train --model <name> --doc docs/models/<name>.md`. The page reruns
+these baselines on the same inputs and gives the model's paired Sharpe
+difference against the bar.
+
+* [ridge](models/ridge.md)
+
 ## Setup
 
 |  |  |

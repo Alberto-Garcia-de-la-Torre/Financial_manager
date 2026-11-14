@@ -189,6 +189,28 @@ def test_unknown_label_ends_are_purged():
     assert victim not in split.train and victim in split.purged
 
 
+def test_a_name_listed_later_does_not_purge_the_years_before_it():
+    # Day 42 regression: a ticker whose stored sessions start a year in used
+    # to give every earlier date a label end at its 21st session, purging the
+    # whole first year from every fold.
+    late = NYSE[252:]
+    gone = NYSE[:100]
+    ends = label_end_dates(NYSE, 21, {"OLD": NYSE, "NEW": late, "GONE": gone})
+    assert ends[NYSE[10]] == NYSE[31]
+    # Before its last session a name that goes still has unknowable labels...
+    assert ends[gone[-5]] == OPEN_END
+    # ...after it, none: it has no rows there.
+    assert ends[NYSE[150]] == NYSE[171]
+    # Where the late name does trade, its calendar still counts.
+    assert ends[late[-1]] == OPEN_END
+    listed = label_end_dates(NYSE, 21, {"OLD": NYSE, "NEW": late})
+    splits = list(
+        walk_forward_splits(NYSE, horizon=21, test_size=63, min_train_size=100, label_end=listed)
+    )
+    assert splits[0].train_start == NYSE[0]
+    assert NYSE.index(splits[0].test_start) == 100 + 21
+
+
 def test_axis_is_sorted_and_deduplicated_and_accepts_timestamps():
     shuffled = list(pd.to_datetime(NYSE[:200])) * 2
     np.random.default_rng(1).shuffle(shuffled)

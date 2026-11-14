@@ -28,8 +28,10 @@ and the euro overnight rate into `data/rates/`; `benchmarks --plot` draws all
 38's strategies against the benchmark and `--report` writes and opens an HTML
 tearsheet of it under `data/reports/`. `train` (day 41) resolves `--model`
 through the model registry in `finmgr/models/` — `--list` shows what is
-registered, `--dry-run` stops after printing the resolved model — and is still
-a stub past that point until day 42. Each stub prints what it will do and
+registered, `--dry-run` stops after printing the resolved model — and from day
+42 trains it walk-forward on the panel, backtests its out-of-sample scores
+beside re-runs of day 38's baselines, and with `--report` writes a tearsheet
+holding that comparison (`--doc` writes it as Markdown too). Each stub prints what it will do and
 exits non-zero, so nothing downstream can mistake "not written yet" for "ran
 successfully".
 
@@ -71,6 +73,9 @@ from finmgr.data import rates as rates_module
 from finmgr.data import universe as universe_module
 from finmgr.features import hygiene as hygiene_module
 from finmgr.features import panel as panel_module
+from finmgr.models import compare as compare_module
+from finmgr.models import walkforward as walkforward_module
+from finmgr.report import model as model_report
 from finmgr.report import tearsheet as tearsheet_module
 
 app = typer.Typer(
@@ -86,7 +91,6 @@ log = runlog.get_logger(__name__)
 # Which roadmap day turns each stub into a real command. Printed with the
 # stub message so it is obvious that nothing is missing by accident.
 _PLANNED = {
-    "train": "day 42",
     "rank": "day 49",
     "report": "day 57",
 }
@@ -1241,6 +1245,14 @@ def _parse_params(pairs: list[str]) -> dict[str, Any]:
     return params
 
 
+def _relative(path: Path) -> str:
+    """`path` relative to the working directory when it is inside it: no home dirs in docs."""
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return path.name
+
+
 @app.command()
 def train(
     model_name: str = typer.Option(
@@ -1258,11 +1270,46 @@ def train(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Resolve and print the model, then stop before training."
     ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Read nothing dated after this (default: today)."
+    ),
+    start: str = typer.Option(
+        strategy_module.DEFAULT_START, "--start", help="First rebalance of the backtest."
+    ),
+    top_k: int = typer.Option(strategy_module.bl.TOP_K, "--top-k", min=1),
+    hold: int = typer.Option(strategy_module.bl.HOLD, "--hold", min=1),
+    test_size: int = typer.Option(
+        walkforward_module.TEST_SIZE, "--test-size", min=1, help="Dates per test window."
+    ),
+    min_train: int = typer.Option(
+        walkforward_module.MIN_TRAIN, "--min-train", min=1, help="Training dates fold 0 needs."
+    ),
+    train_size: int | None = typer.Option(
+        None, "--train-size", min=1, help="Rolling training window in dates (default: expanding)."
+    ),
+    report: bool = typer.Option(
+        False, "--report", help="Write the HTML tearsheet and open it in the browser."
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="Where --report writes (default: data/reports/train_<model>_<as-of>.html).",
+    ),
+    open_page: bool = typer.Option(
+        True, "--open/--no-open", help="Open the --report page in the default browser."
+    ),
+    doc: str | None = typer.Option(
+        None, "--doc", help="Also write the comparison as Markdown here, e.g. docs/models/ridge.md."
+    ),
 ) -> None:
-    """Train a model walk-forward on the feature panel.
+    """Train a model walk-forward on the feature panel and backtest it against the baselines.
 
-    The model is looked up by name in the registry (finmgr/models), so any
-    registered model is one --model away. Walk-forward training lands on day 42.
+    The model is looked up by name in the registry (finmgr/models). It is refitted
+    on every purged walk-forward fold of the panel's model features (per-date
+    ranks) against the 21-session excess return; its out-of-sample scores then
+    run through the same engine, window, top-K, holding period and costs as day
+    38's baselines, which are re-run beside it. The run is logged in
+    docs/trials.csv; --report writes a tearsheet with the comparison on it.
     """
     if list_models:
         table = Table(title="Registered models")
@@ -1292,7 +1339,115 @@ def train(
     log.info("finmgr train: resolved %r -> %r", model_name, model)
     if dry_run:
         return
-    _not_implemented("train")
+
+    settings = load_settings()
+    costs = CostModel.from_settings(settings)
+    try:
+        point = store.as_date(as_of, "--as-of") or pit.LATEST
+        data = walkforward_module.load_dataset(as_of=point, settings=settings)
+        wf = walkforward_module.walk_forward(
+            model_name,
+            data,
+            params=params,
+            test_size=test_size,
+            min_train_size=min_train,
+            train_size=train_size,
+        )
+        log.info(
+            "finmgr train: %s fitted on %d folds, first test %s",
+            model_name,
+            len(wf.folds),
+            wf.folds[0].test_start,
+        )
+        inputs = strategy_module.load_inputs(as_of=point, momentum=True, settings=settings)
+        run = strategy_module.run_scores(
+            wf.scores,
+            inputs,
+            name=f"{model_name}, walk-forward",
+            params=wf.variant_params(),
+            start=start,
+            top_k=top_k,
+            hold=hold,
+            costs=costs,
+        )
+        baselines = compare_module.run_baselines_for(
+            inputs, start=start, top_k=top_k, hold=hold, costs=costs
+        )
+        comp = compare_module.compare(
+            run,
+            baselines,
+            compare_module.random_sharpes(start=run.metrics.start, end=run.metrics.end),
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        log.error("finmgr train: %s", exc)
+        raise typer.Exit(code=1) from exc
+    logged = strategy_module.log_run(run, source="finmgr train")
+
+    console.print(model_report.learned_markdown(wf), markup=False, soft_wrap=True)
+    console.print(compare_module.comparison_markdown(comp), markup=False, soft_wrap=True)
+    iv, fw = run.interval, logged.familywise
+    console.print(
+        f"{run.label}: Sharpe {iv.point:.2f}, {iv.level:.0%} interval [{iv.low:.2f}, "
+        f"{iv.high:.2f}]; {logged.n_variants} variants tested -> {fw.level:.2%} interval "
+        f"[{fw.low:.2f}, {fw.high:.2f}]",
+        markup=False,
+    )
+    console.print(f"verdict: {comp.verdict}", markup=False)
+
+    command = (
+        f"finmgr train --model {model_name}"
+        + "".join(f" -p {p}" for p in param or [])
+        + (f" --as-of {as_of}" if as_of else "")
+    )
+    path = (
+        Path(out)
+        if out
+        else settings.data_dir
+        / "reports"
+        / tearsheet_module.default_name(model_name, run.as_of, prefix="train")
+    )
+    if doc:
+        target = Path(doc)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            model_report.model_page(
+                wf,
+                comp,
+                as_of=run.as_of,
+                command=command,
+                tearsheet=_relative(path) if report else None,
+                n_variants=logged.n_variants,
+                familywise=(fw.level, fw.low, fw.high),
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"comparison -> {target}")
+    if not report:
+        return
+    description = (
+        f"<code>{model_name}</code> refitted on {len(wf.folds)} purged walk-forward folds "
+        f"(every {wf.test_size} dates, expanding window); each test date's top {run.top_k} "
+        f"by predicted {wf.label} bought, rebalanced every {run.hold} sessions; a held name "
+        "still in the top K is kept, not re-bought."
+    )
+    sections = [
+        ("Against the baselines", compare_module.comparison_html(comp)),
+        ("What the model learnt", model_report.learned_html(wf)),
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        tearsheet_module.render_tearsheet(
+            run,
+            logged,
+            sections=sections,
+            command=f"{command} --report",
+            description=description,
+        ),
+        encoding="utf-8",
+    )
+    console.print(f"tearsheet -> {path}")
+    if open_page and not webbrowser.open(path.resolve().as_uri()):
+        log.warning("finmgr train: no browser to open; the page is at %s", path)
 
 
 @app.command()

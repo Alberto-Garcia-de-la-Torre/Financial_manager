@@ -107,6 +107,19 @@ class EstimatorModel(ABC):
             )
         return np.asarray(self._fitted.predict(X), dtype=float)
 
+    def coefficients(self) -> pd.Series | None:
+        """Per-feature weights of a fitted linear estimator; None for anything else.
+
+        Not part of :class:`Model`: an optional window into what was learnt,
+        which the walk-forward harness records per fold when it exists.
+        """
+        if self._fitted is None or self._columns is None:
+            raise NotFittedError(f"{self.name}: coefficients asked for before fit")
+        coef = getattr(self._fitted, "coef_", None)
+        if coef is None:
+            return None
+        return pd.Series(np.ravel(coef).astype(float), index=self._columns, name=self.name)
+
     def __repr__(self) -> str:
         args = ", ".join(f"{k}={v!r}" for k, v in self._params.items())
         return f"{type(self).__name__}({args})"

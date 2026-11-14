@@ -265,6 +265,23 @@ def gross_check(prices, momentum, rf, result: bl.Baselines, *, start, end) -> st
     return "\n".join(lines)
 
 
+def models_section(models_dir: Path | None = None) -> str:
+    """Links to every model page `finmgr train --doc` wrote under docs/models/ (day 42)."""
+    folder = models_dir if models_dir is not None else DOCS / "models"
+    pages = sorted(folder.glob("*.md")) if folder.exists() else []
+    if not pages:
+        return ""
+    links = "\n".join(f"* [{page.stem}](models/{page.name})" for page in pages)
+    return (
+        "### Models measured against it\n\n"
+        "Each model has a page under `docs/models/`, written by\n"
+        "`finmgr train --model <name> --doc docs/models/<name>.md`. The page reruns\n"
+        "these baselines on the same inputs and gives the model's paired Sharpe\n"
+        "difference against the bar.\n\n"
+        f"{links}\n"
+    )
+
+
 def render(
     result: bl.Baselines,
     *,
@@ -347,6 +364,7 @@ doing nothing; below equal weight, worse than not choosing; below the random
 95th percentile, indistinguishable from a lucky draw; below 12-1 momentum, it
 adds nothing to a one-line rule.
 
+{models_section()}
 ## Setup
 
 {setup}

@@ -73,7 +73,9 @@ def label_end_dates(
     :func:`~finmgr.backtest.labels.compute_labels`; repeated calendars are
     fine), the end is the `horizon`-th session strictly after t on each
     calendar, and the latest of them is kept. :data:`OPEN_END` where a calendar
-    has no such session yet.
+    has no such session yet. A calendar contributes only on the dates it
+    spans: before its first session or after its last there is no row, hence
+    no label, on that calendar.
     """
     if horizon < 1:
         raise ValueError(f"horizon must be a positive session count, got {horizon}")
@@ -87,6 +89,10 @@ def label_end_dates(
     for t in axis:
         latest = t
         for cal in calendars:
+            # A calendar that has not started by t (a name listed later) or ended
+            # before it (a name gone) has no label on t: it cannot leak into a test.
+            if cal[0] > t or cal[-1] < t:
+                continue
             k = bisect_right(cal, t) + horizon - 1  # horizon-th session after t
             latest = max(latest, cal[k] if k < len(cal) else OPEN_END)
         out[t] = latest

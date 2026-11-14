@@ -129,10 +129,12 @@ class StrategyRun:
     as_of: date
     n_tickers: int
     rf_used: bool
+    #: Ledger family prefix: "baseline" for day 38's strategies, "model" for learned ones.
+    kind: str = "baseline"
 
     @property
     def family(self) -> str:
-        return f"baseline: {self.label}"
+        return f"{self.kind}: {self.label}"
 
 
 def strategy_scores(strategy: str, inputs: Inputs, *, seed: int = 0) -> pd.DataFrame:
@@ -146,6 +148,60 @@ def strategy_scores(strategy: str, inputs: Inputs, *, seed: int = 0) -> pd.DataF
     if strategy == "random":
         return bl.random_scores(inputs.prices, seed)
     raise ValueError(f"unknown strategy {strategy!r}; choose from {', '.join(STRATEGIES)}")
+
+
+def _benchmark_run(inputs: Inputs, *, hold: int, common: dict) -> BacktestResult:
+    """The benchmark bought and held on the union of its own and the universe's dates."""
+    both = pd.concat([inputs.prices, inputs.benchmark_prices], ignore_index=True)
+    return run_backtest(
+        constant_scores(inputs.benchmark_prices), both, top_k=1, hold=hold, **common
+    )
+
+
+def _measure(
+    *,
+    strategy: str,
+    label: str,
+    result: BacktestResult,
+    bench: BacktestResult,
+    inputs: Inputs,
+    params: dict[str, object],
+    costs: CostModel,
+    top_k: int,
+    hold: int,
+    start: date | str,
+    kind: str = "baseline",
+) -> StrategyRun:
+    """Score `result` and the benchmark identically: metrics, excess returns, intervals."""
+    axis = list(bench.curve.index)
+    if list(result.curve.index) != axis:
+        raise AssertionError(f"{strategy} ran on a different date axis from the benchmark")
+    periods = bl.axis_periods(axis)
+    excess = result_excess(result, inputs.rf)
+    bench_excess = result_excess(bench, inputs.rf)
+    return StrategyRun(
+        strategy=strategy,
+        label=label,
+        result=result,
+        benchmark=bench,
+        benchmark_ticker=inputs.benchmark_ticker,
+        metrics=backtest_metrics(result, rf=inputs.rf, periods=periods),
+        benchmark_metrics=backtest_metrics(bench, rf=inputs.rf, periods=periods),
+        excess=excess,
+        benchmark_excess=bench_excess,
+        interval=bootstrap_sharpe(excess, periods=periods),
+        vs_benchmark=bootstrap_sharpe_difference(excess, bench_excess, periods=periods),
+        periods=periods,
+        params=params,
+        costs=costs,
+        top_k=top_k,
+        hold=hold,
+        start=start,
+        as_of=inputs.as_of,
+        n_tickers=inputs.prices["ticker"].nunique(),
+        rf_used=inputs.rf is not None,
+        kind=kind,
+    )
 
 
 def run_strategy(
@@ -164,10 +220,7 @@ def run_strategy(
     model = costs if costs is not None else CostModel()
     common = {"costs": model, "start": start, "end": inputs.end}
     prices = inputs.prices
-    both = pd.concat([prices, inputs.benchmark_prices], ignore_index=True)
-    bench = run_backtest(
-        constant_scores(inputs.benchmark_prices), both, top_k=1, hold=hold, **common
-    )
+    bench = _benchmark_run(inputs, hold=hold, common=common)
     n_names = prices["ticker"].nunique()
 
     if strategy == "benchmark":
@@ -185,13 +238,6 @@ def run_strategy(
         result = run_backtest(
             strategy_scores(strategy, inputs, seed=seed), prices, top_k=top_k, hold=hold, **common
         )
-    axis = list(bench.curve.index)
-    if list(result.curve.index) != axis:
-        raise AssertionError(f"{strategy} ran on a different date axis from the benchmark")
-    periods = bl.axis_periods(axis)
-
-    excess = result_excess(result, inputs.rf)
-    bench_excess = result_excess(bench, inputs.rf)
     label = STRATEGIES[strategy]
     if strategy == "random":
         params: dict[str, object] = {
@@ -204,27 +250,62 @@ def run_strategy(
         }
     else:
         params = bl.baseline_params(label, start=start, hold=hold, costs=model, top_k=top_k)
-    return StrategyRun(
+    return _measure(
         strategy=strategy,
         label=label,
         result=result,
-        benchmark=bench,
-        benchmark_ticker=inputs.benchmark_ticker,
-        metrics=backtest_metrics(result, rf=inputs.rf, periods=periods),
-        benchmark_metrics=backtest_metrics(bench, rf=inputs.rf, periods=periods),
-        excess=excess,
-        benchmark_excess=bench_excess,
-        interval=bootstrap_sharpe(excess, periods=periods),
-        vs_benchmark=bootstrap_sharpe_difference(excess, bench_excess, periods=periods),
-        periods=periods,
+        bench=bench,
+        inputs=inputs,
         params=params,
         costs=model,
         top_k=1 if strategy == "benchmark" else (n_names if "equal" in strategy else top_k),
         hold=hold,
         start=start,
-        as_of=inputs.as_of,
-        n_tickers=n_names,
-        rf_used=inputs.rf is not None,
+    )
+
+
+def run_scores(
+    scores: pd.DataFrame,
+    inputs: Inputs,
+    *,
+    name: str,
+    params: dict[str, object],
+    start: date | str = DEFAULT_START,
+    top_k: int = bl.TOP_K,
+    hold: int = bl.HOLD,
+    costs: CostModel | None = None,
+    kind: str = "model",
+) -> StrategyRun:
+    """Backtest any `ticker, date, score` frame exactly as :func:`run_strategy` runs momentum.
+
+    This is how a learned model meets the baselines: its out-of-sample scores
+    go through the same engine, window, top-K, holding period, costs, fills
+    and benchmark. `params` is what defines the variant in the ledger; the
+    window, sizing and costs are added to it here so they cannot be forgotten.
+    """
+    model = costs if costs is not None else CostModel()
+    common = {"costs": model, "start": start, "end": inputs.end}
+    bench = _benchmark_run(inputs, hold=hold, common=common)
+    result = run_backtest(scores, inputs.prices, top_k=top_k, hold=hold, **common)
+    full = {
+        **params,
+        "start": str(start),
+        "hold": hold,
+        "top_k": top_k,
+        "costs": model.model_dump(),
+    }
+    return _measure(
+        strategy=name,
+        label=name,
+        result=result,
+        bench=bench,
+        inputs=inputs,
+        params=full,
+        costs=model,
+        top_k=top_k,
+        hold=hold,
+        start=start,
+        kind=kind,
     )
 
 
