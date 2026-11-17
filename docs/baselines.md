@@ -43,6 +43,9 @@ difference against the bar.
 * [ridge vs lgbm, head to head](models/ridge_vs_lgbm.md): both models on one
   page, same features, folds, window and costs (checked), each against this bar
   and the two against each other (`finmgr compare-models ridge lgbm --doc ...`)
+* [logit P(top quintile), calibrated](models/classifier_logit.md): the
+  classification variant, its out-of-sample calibration curve, and its book
+  against this bar (`finmgr classify --doc ...`)
 
 ## Setup
 

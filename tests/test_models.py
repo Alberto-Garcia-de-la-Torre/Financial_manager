@@ -30,7 +30,8 @@ def make_data(n: int = 2000, seed: int = 41) -> tuple[pd.DataFrame, pd.Series]:
 
 
 def test_both_models_are_registered():
-    assert models.available() == NAMES
+    # Day 44 added the classifiers; the regression contract below covers NAMES only.
+    assert models.available() == sorted([*NAMES, "lgbm_clf", "logit"])
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -94,7 +95,7 @@ def test_overrides_replace_defaults_and_typos_fail():
 
 
 def test_unknown_model_names_the_choices():
-    with pytest.raises(models.UnknownModel, match="choose from lgbm, ridge"):
+    with pytest.raises(models.UnknownModel, match="choose from lgbm, lgbm_clf, logit, ridge"):
         models.create("xgb")
 
 

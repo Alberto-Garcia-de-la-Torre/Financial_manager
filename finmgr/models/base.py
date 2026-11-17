@@ -105,7 +105,11 @@ class EstimatorModel(ABC):
                 f"{self.name}: predict columns {list(X.columns)} differ from "
                 f"the fitted ones {self._columns}"
             )
-        return np.asarray(self._fitted.predict(X), dtype=float)
+        return np.asarray(self._output(self._fitted, X), dtype=float)
+
+    def _output(self, fitted: Any, X: pd.DataFrame) -> Any:
+        """The score of a fitted estimator; classifiers override it with a probability."""
+        return fitted.predict(X)
 
     def coefficients(self) -> pd.Series | None:
         """Per-feature weights of a fitted linear estimator; None for anything else.

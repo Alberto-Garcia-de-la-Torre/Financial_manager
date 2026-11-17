@@ -4,7 +4,8 @@ Importing this package registers every model; use :func:`create` by name rather
 than importing a model class.
 """
 
-from finmgr.models import boosting, linear  # noqa: F401  (registers "lgbm", "ridge")
+# Registers "lgbm", "ridge", and the day 44 classifiers "logit" and "lgbm_clf".
+from finmgr.models import boosting, classifiers, linear  # noqa: F401
 from finmgr.models.base import EstimatorModel, Model, NotFittedError
 from finmgr.models.registry import UnknownModel, available, create, register, resolve
 

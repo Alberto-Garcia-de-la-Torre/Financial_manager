@@ -73,9 +73,11 @@ from finmgr.data import rates as rates_module
 from finmgr.data import universe as universe_module
 from finmgr.features import hygiene as hygiene_module
 from finmgr.features import panel as panel_module
+from finmgr.models import classify as classify_module
 from finmgr.models import compare as compare_module
 from finmgr.models import headtohead as headtohead_module
 from finmgr.models import walkforward as walkforward_module
+from finmgr.report import calibration as calibration_report
 from finmgr.report import headtohead as headtohead_report
 from finmgr.report import model as model_report
 from finmgr.report import tearsheet as tearsheet_module
@@ -1331,6 +1333,12 @@ def train(
         raise typer.BadParameter(str(exc), param_hint="--model") from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--param") from exc
+    if getattr(model, "kind", "regressor") == "classifier":
+        raise typer.BadParameter(
+            f"{model_name!r} is a classifier (predicts P(top quintile)); "
+            f"train it with `finmgr classify --model {model_name}`",
+            param_hint="--model",
+        )
 
     table = Table(title=f"model {model.name!r} ({type(model).__name__})")
     table.add_column("parameter")
@@ -1601,6 +1609,221 @@ def compare_models(
     console.print(f"page -> {path}")
     if open_page and not webbrowser.open(path.resolve().as_uri()):
         log.warning("finmgr compare-models: no browser to open; the page is at %s", path)
+
+
+def _cal_size(raw: str) -> float:
+    """``"0.4"`` -> 0.4 (a share), ``"63"`` -> 63.0 (dates); anything else is a usage error."""
+    try:
+        value = float(raw)
+        classify_module.slice_length(1000, value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"expected a fraction in (0, 1) or a whole number of dates, got {raw!r}",
+            param_hint="--cal-size",
+        ) from exc
+    return value
+
+
+@app.command()
+def classify(
+    model_name: str = typer.Option(
+        "logit", "--model", "-m", help="A registered classifier: logit or lgbm_clf."
+    ),
+    param: Annotated[
+        list[str] | None,
+        typer.Option("--param", "-p", help="Hyperparameter override KEY=VALUE; repeatable."),
+    ] = None,
+    method: str = typer.Option(
+        classify_module.METHOD, "--method", help="Calibrator: platt, isotonic or none."
+    ),
+    cal_size: str = typer.Option(
+        str(classify_module.CAL_SIZE),
+        "--cal-size",
+        help="Calibration slice: a share of each fold's training dates (0.4) or a date count (63).",
+    ),
+    slices: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--slice",
+            help="Also report calibration with this slice length (repeatable), for the doc.",
+        ),
+    ] = None,
+    quantile: float = typer.Option(
+        classify_module.QUANTILE, "--quantile", min=0.01, max=0.5, help="Top share = class 1."
+    ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Read nothing dated after this (default: today)."
+    ),
+    start: str = typer.Option(
+        strategy_module.DEFAULT_START, "--start", help="First rebalance of the backtest."
+    ),
+    top_k: int = typer.Option(strategy_module.bl.TOP_K, "--top-k", min=1),
+    hold: int = typer.Option(strategy_module.bl.HOLD, "--hold", min=1),
+    report: bool = typer.Option(
+        False, "--report", help="Write the HTML tearsheet and open it in the browser."
+    ),
+    out: str | None = typer.Option(
+        None, "--out", help="Where --report writes (default: data/reports/classify_<model>_...)."
+    ),
+    open_page: bool = typer.Option(
+        True, "--open/--no-open", help="Open the --report page in the default browser."
+    ),
+    doc: str | None = typer.Option(
+        None,
+        "--doc",
+        help="Also write the page as Markdown here (and the reliability PNG beside it).",
+    ),
+) -> None:
+    """Predict P(top quintile) walk-forward, calibrate it on a held-out slice, check it.
+
+    In every one of day 42's walk-forward folds the classifier is fitted on the
+    earlier training dates, a calibrator (Platt or isotonic) on the last
+    --cal-size of them, and the test window gets the calibrated probability. The
+    out-of-sample calibration curve is checked against fixed limits (ECE and
+    worst bin); exit code 3 if it is not close to the diagonal. The ranking it
+    implies is backtested against day 38's baselines and logged in docs/trials.csv.
+    """
+    if method not in classify_module.METHODS:
+        raise typer.BadParameter(
+            f"choose from {', '.join(classify_module.METHODS)}", param_hint="--method"
+        )
+    size = _cal_size(cal_size)
+    extra = [_cal_size(s) for s in slices or []]
+    params = _parse_params(param or [])
+    try:
+        models_module.create(model_name, **params)
+        if getattr(models_module.resolve(model_name), "kind", "regressor") != "classifier":
+            raise typer.BadParameter(
+                f"{model_name!r} is a regressor; use `finmgr train`", param_hint="--model"
+            )
+    except models_module.UnknownModel as exc:
+        raise typer.BadParameter(str(exc), param_hint="--model") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--param") from exc
+
+    settings = load_settings()
+    costs = CostModel.from_settings(settings)
+    try:
+        point = store.as_date(as_of, "--as-of") or pit.LATEST
+        data = walkforward_module.load_dataset(as_of=point, settings=settings)
+
+        def fit(length: float) -> classify_module.CalibratedWalkForward:
+            return classify_module.calibrated_walk_forward(
+                model_name, data, method=method, quantile=quantile, cal_size=length, params=params
+            )
+
+        cw = fit(size)
+        sweep = {}
+        for length in extra:
+            if length == size:
+                continue
+            sweep[length] = calibration_report.method_scores(fit(length))
+        if sweep:
+            sweep = {size: calibration_report.method_scores(cw), **sweep}
+        check = classify_module.calibration_check(cw.oos["prob"], cw.oos["target"])
+        inputs = strategy_module.load_inputs(as_of=point, momentum=True, settings=settings)
+        run = strategy_module.run_scores(
+            cw.wf.scores,
+            inputs,
+            name=f"{model_name} P(top {quantile:.0%}), walk-forward",
+            params=cw.variant_params(),
+            start=start,
+            top_k=top_k,
+            hold=hold,
+            costs=costs,
+        )
+        baselines = compare_module.run_baselines_for(
+            inputs, start=start, top_k=top_k, hold=hold, costs=costs
+        )
+        comp = compare_module.compare(
+            run,
+            baselines,
+            compare_module.random_sharpes(start=run.metrics.start, end=run.metrics.end),
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        log.error("finmgr classify: %s", exc)
+        raise typer.Exit(code=1) from exc
+    logged = strategy_module.log_run(run, source="finmgr classify")
+
+    console.print(
+        calibration_report.calibration_markdown(cw, check, slices=sweep or None),
+        markup=False,
+        soft_wrap=True,
+    )
+    console.print(compare_module.comparison_markdown(comp), markup=False, soft_wrap=True)
+    iv, fw = run.interval, logged.familywise
+    console.print(
+        f"{run.label}: Sharpe {iv.point:.2f}, {iv.level:.0%} interval [{iv.low:.2f}, "
+        f"{iv.high:.2f}]; {logged.n_variants} variants tested -> {fw.level:.2%} interval "
+        f"[{fw.low:.2f}, {fw.high:.2f}]",
+        markup=False,
+    )
+    console.print(f"book: {comp.verdict}", markup=False)
+    console.print(f"calibration: {check.verdict}", markup=False)
+
+    command = (
+        f"finmgr classify --model {model_name}"
+        + "".join(f" -p {p}" for p in param or [])
+        + (f" --method {method}" if method != classify_module.METHOD else "")
+        + (f" --cal-size {cal_size}" if size != classify_module.CAL_SIZE else "")
+        + "".join(f" --slice {s}" for s in slices or [])
+        + (f" --as-of {as_of}" if as_of else "")
+    )
+    path = (
+        Path(out)
+        if out
+        else settings.data_dir
+        / "reports"
+        / tearsheet_module.default_name(model_name, run.as_of, prefix="classify")
+    )
+    if doc:
+        target = Path(doc)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        png = calibration_report.save_reliability_png(cw, target.with_suffix(".png"))
+        target.write_text(
+            calibration_report.classifier_page(
+                cw,
+                check,
+                comp,
+                as_of=run.as_of,
+                command=command,
+                chart=png.name,
+                slices=sweep or None,
+                tearsheet=_relative(path) if report else None,
+                n_variants=logged.n_variants,
+                familywise=(fw.level, fw.low, fw.high),
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"page -> {target}, chart -> {png}")
+    if report:
+        description = (
+            f"<code>{model_name}</code> predicts P(top {quantile:.0%} by {cw.wf.label}) on "
+            f"{len(cw.wf.folds)} purged walk-forward folds, calibrated ({method}) on the last "
+            f"part of each fold's training window; each test date's top {run.top_k} by "
+            f"probability bought, rebalanced every {run.hold} sessions."
+        )
+        sections = [
+            ("Calibration out of sample", calibration_report.calibration_html(cw, check)),
+            ("Against the baselines", compare_module.comparison_html(comp)),
+            ("What the model learnt", model_report.learned_html(cw.wf)),
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            tearsheet_module.render_tearsheet(
+                run,
+                logged,
+                sections=sections,
+                command=f"{command} --report",
+                description=description,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"tearsheet -> {path}")
+        if open_page and not webbrowser.open(path.resolve().as_uri()):
+            log.warning("finmgr classify: no browser to open; the page is at %s", path)
+    if not check.passed:
+        raise typer.Exit(code=3)
 
 
 @app.command()

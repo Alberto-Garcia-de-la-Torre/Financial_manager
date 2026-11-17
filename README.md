@@ -1294,7 +1294,7 @@ registry in `finmgr/models/registry.py`:
 ```python
 from finmgr import models
 
-models.available()                         # ['lgbm', 'ridge']
+models.available()                         # ['lgbm', 'lgbm_clf', 'logit', 'ridge']
 model = models.create("ridge", alpha=10.0)
 model.fit(X_train, y_train).predict(X_test)
 ```
@@ -1305,7 +1305,9 @@ different feature set (missing, extra or reordered columns) raises, and a
 misspelt hyperparameter raises instead of being ignored. Two models are
 registered: `ridge` (scikit-learn `Ridge`, day 42 trains it) and `lgbm`
 (LightGBM, single-threaded and seeded so reruns reproduce exactly; day 43
-trains it). Adding a model means one module with `@register("name")` and one
+trains it). Day 44 adds two classifiers, `logit` and `lgbm_clf`, that predict
+P(top quintile) (see "Classification variant" below); `finmgr train` refuses
+them. Adding a model means one module with `@register("name")` and one
 import line in `finmgr/models/__init__.py`.
 
 From the command line, `--model` resolves through the same registry:
@@ -1409,6 +1411,49 @@ bets: the per-date score correlation is 0.48 and they share 38% of their top 10.
 Neither model beats the bar. LightGBM's own page is
 [`docs/models/lgbm.md`](docs/models/lgbm.md).
 
+### Classification variant
+
+`finmgr classify` (day 44, `finmgr/models/classify.py`) asks a different
+question: instead of the 21-session excess return, the probability that a name
+finishes its date in the **top quintile** of the universe by that return. The
+target is 1 for each date's top 20% of known labels, so the base rate is 20% on
+every date. Inside every one of day 42's walk-forward folds (identical test
+windows to ridge's and LightGBM's):
+
+1. the last part of the training window — by default 40% of its dates — is held
+   out as the **calibration slice**, and training dates whose label reaches into
+   it are purged;
+2. the classifier (`logit` by default) is fitted on the earlier dates;
+3. a monotone calibrator — **Platt** scaling by default, or `--method isotonic` —
+   maps its raw probability on the slice to the slice's outcomes;
+4. the test window gets the calibrated probability.
+
+```
+finmgr classify --model logit --slice 63 --slice 0.25 --as-of 2026-11-12 \
+    --report --doc docs/models/classifier_logit.md
+finmgr classify --method isotonic --cal-size 63      # one quarter, isotonic
+```
+
+The acceptance check is fixed before the run: over the out-of-sample rows, the
+expected calibration error across 10 equal-count bins must be ≤ 0.02 and no
+bin may be more than 0.05 from the diagonal. The command exits 3 if it is not.
+The book ranks on the raw probability (calibration is monotone, so it does not
+change who is in the top K) and goes through the same backtest and comparison
+as every model.
+
+**The result, in [`docs/models/classifier_logit.md`](docs/models/classifier_logit.md)
+(data as of 2026-11-12):** on 387,968 out-of-sample rows the Platt-calibrated
+curve is close to the diagonal: ECE 0.0070, worst bin 0.018 (chart:
+[`docs/models/classifier_logit.png`](docs/models/classifier_logit.png)). The
+forecast is informative, but only slightly: AUC 0.58, Brier skill +1.1% over a
+flat 20%, predictions mostly between 14% and 29%. The slice-length table on
+that page shows the choice openly. A one-quarter slice made isotonic
+*overfit* (worst bin 0.054, failing), and with the classifier fitted on 60% of
+the window the raw probabilities fail too (worst bin 0.051). Calibration is
+not uniform over time: 13 of 16 years are within the ECE limit on their own.
+As a book it gets Sharpe 0.85 [0.35, 1.38], below the 1.08 bar, like ridge and
+LightGBM.
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -1422,6 +1467,7 @@ finmgr --help
   features   Build the feature panel at data/features/panel.parquet from the stored bars.
   train      Train a model walk-forward on the feature panel.
   compare-models  Train several models on identical inputs; compare them on one page.
+  classify   Predict P(top quintile) walk-forward, calibrate it on a held-out slice, check it.
   rank       Score and rank the universe as of a given date.
   report     Render the daily HTML report.
 ```
@@ -1430,7 +1476,7 @@ finmgr --help
 `finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
 quality checks" above), and `quarantine` (day 20) sits right after it. `features` is real from day 31
 (see "The feature panel" above). `train` is real from day 42 (see "Training
-walk-forward" above), and `compare-models` (day 43) sits beside it. `rank` and `report` are stubs: each prints
+walk-forward" above), and `compare-models` (day 43) and `classify` (day 44) sit beside it. `rank` and `report` are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what
