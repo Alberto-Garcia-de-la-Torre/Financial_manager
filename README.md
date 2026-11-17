@@ -1355,6 +1355,60 @@ learnt" (ridge's weights in every fold and the out-of-sample rank IC).
 [`docs/models/ridge.md`](docs/models/ridge.md):** Sharpe 0.89 [0.38, 1.43]
 against a bar of 1.08, so it does not beat the bar.
 
+### Boosting against ridge, on one page (day 43)
+
+`finmgr compare-models` trains two or more models through the same
+walk-forward and puts them side by side. The first model named is the
+incumbent:
+
+```bash
+finmgr compare-models ridge lgbm --as-of 2026-11-12 --report --doc docs/models/ridge_vs_lgbm.md
+finmgr compare-models ridge lgbm -p lgbm.n_estimators=100 -p ridge.alpha=10   # per-model overrides
+```
+
+**Fair by construction.** Every model runs in one process: one `Dataset`
+(the same feature matrix, label and missing → 0.5 fill), one set of backtest
+inputs, one cost model and one window, top-K and hold. The baselines are run
+once and shared by all the models.
+
+**Fair by check.** Fairness is not just claimed. `finmgr/models/headtohead.py`
+compares the finished runs field by field: features, label and horizon, split
+settings, every fold's train and test dates, the rows fitted per fold, the
+(ticker, date) rows scored, the backtest's date axis, the window, top-K and
+hold, the costs, and the benchmark and risk-free rate. If anything differs, the
+command exits 1 with `UnfairComparison` and writes no page. The page prints the
+table of checks.
+
+**Side by side.** The page (`finmgr/report/headtohead.py`) shows:
+
+* each model against day 38's bar;
+* a metrics table with one column per model;
+* both models and every baseline in one candidates table;
+* the challenger against the incumbent, paired directly: the block-bootstrap
+  Sharpe difference, the per-date IC difference with a t-stat deflated for the
+  overlapping labels, the folds won, the score correlation and the top-K
+  overlap;
+* returns year by year;
+* what each model learnt (ridge's weights; LightGBM's share of split gain per
+  feature, recorded each fold).
+
+The HTML version (`data/reports/compare_ridge_vs_lgbm_<as-of>.html`) adds both
+equity curves, drawdowns and rolling Sharpes on shared axes. Each model is also
+logged in `docs/trials.csv`, as `finmgr train` would log it.
+
+**The result, in [`docs/models/ridge_vs_lgbm.md`](docs/models/ridge_vs_lgbm.md)
+(data as of 2026-11-12):** every fairness check passes (65 identical folds,
+390,177 identical scored rows, one date axis, one cost model). LightGBM
+(defaults in `finmgr/models/boosting.py`) gets Sharpe 0.77 [0.28, 1.30] against
+ridge's 0.89 [0.38, 1.43]. Paired, lgbm minus ridge is −0.12 [−0.39, +0.17], so
+the two cannot be told apart. Against the bar, though, lgbm's paired interval
+is entirely below zero (−0.30 [−0.62, −0.02]). Its out-of-sample IC is lower
+(+0.013 vs +0.023), with the higher mean IC in only 25 of 64 folds. It is also
+more volatile (max drawdown −41.6% vs −29.9%). The two books are different
+bets: the per-date score correlation is 0.48 and they share 38% of their top 10.
+Neither model beats the bar. LightGBM's own page is
+[`docs/models/lgbm.md`](docs/models/lgbm.md).
+
 ## Command line
 
 Installing the package puts a `finmgr` command on the path. The six
@@ -1367,6 +1421,7 @@ finmgr --help
   check      Run the data quality checks over the stored bars, severity-tagged.
   features   Build the feature panel at data/features/panel.parquet from the stored bars.
   train      Train a model walk-forward on the feature panel.
+  compare-models  Train several models on identical inputs; compare them on one page.
   rank       Score and rank the universe as of a given date.
   report     Render the daily HTML report.
 ```
@@ -1375,7 +1430,7 @@ finmgr --help
 `finmgr ingest --help` for its options. `check` is real from day 19 (see "Data
 quality checks" above), and `quarantine` (day 20) sits right after it. `features` is real from day 31
 (see "The feature panel" above). `train` is real from day 42 (see "Training
-walk-forward" above). `rank` and `report` are stubs: each prints
+walk-forward" above), and `compare-models` (day 43) sits beside it. `rank` and `report` are stubs: each prints
 `not implemented yet` along with the roadmap day that fills it in, and exits
 non-zero so nothing mistakes an unwritten stage for a successful one.
 `finmgr coverage` sits beside the pipeline rather than in it: it reports what

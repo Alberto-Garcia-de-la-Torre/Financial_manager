@@ -148,6 +148,8 @@ class Fold:
     n_train: int  # rows with a label actually fitted on
     n_test: int  # rows predicted
     coefficients: pd.Series | None = field(default=None, repr=False)
+    #: Normalised feature importances (trees); None for a model that has none.
+    importances: pd.Series | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,15 @@ class WalkForward:
     def coefficients(self) -> pd.DataFrame:
         """Fold x feature weights; empty when the model has none (trees)."""
         rows = {f.test_start: f.coefficients for f in self.folds if f.coefficients is not None}
+        if not rows:
+            return pd.DataFrame(columns=self.features)
+        out = pd.DataFrame(rows).T
+        out.index.name = "test_start"
+        return out
+
+    def importances(self) -> pd.DataFrame:
+        """Fold x feature importance shares (each row sums to 1); empty for linear models."""
+        rows = {f.test_start: f.importances for f in self.folds if f.importances is not None}
         if not rows:
             return pd.DataFrame(columns=self.features)
         out = pd.DataFrame(rows).T
@@ -286,6 +297,7 @@ def walk_forward(
         pred["score"] = model.predict(test[feats])
         parts.append(pred)
         coef = model.coefficients() if hasattr(model, "coefficients") else None
+        imp = model.importances() if hasattr(model, "importances") else None
         folds.append(
             Fold(
                 fold=split.fold,
@@ -296,6 +308,7 @@ def walk_forward(
                 n_train=len(train),
                 n_test=len(test),
                 coefficients=coef,
+                importances=imp,
             )
         )
     if not parts:

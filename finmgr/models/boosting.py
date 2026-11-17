@@ -33,4 +33,8 @@ class LGBMModel(EstimatorModel):
     }
 
     def _estimator(self) -> Any:
-        return LGBMRegressor(**self.params, n_jobs=1, deterministic=True, verbose=-1)
+        # Gain, not split counts: how much each feature reduced the loss, which is
+        # what "what the model learnt" should report (fixed, not a tunable).
+        return LGBMRegressor(
+            **self.params, n_jobs=1, deterministic=True, verbose=-1, importance_type="gain"
+        )

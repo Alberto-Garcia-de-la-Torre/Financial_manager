@@ -74,7 +74,9 @@ from finmgr.data import universe as universe_module
 from finmgr.features import hygiene as hygiene_module
 from finmgr.features import panel as panel_module
 from finmgr.models import compare as compare_module
+from finmgr.models import headtohead as headtohead_module
 from finmgr.models import walkforward as walkforward_module
+from finmgr.report import headtohead as headtohead_report
 from finmgr.report import model as model_report
 from finmgr.report import tearsheet as tearsheet_module
 
@@ -1448,6 +1450,157 @@ def train(
     console.print(f"tearsheet -> {path}")
     if open_page and not webbrowser.open(path.resolve().as_uri()):
         log.warning("finmgr train: no browser to open; the page is at %s", path)
+
+
+@app.command("compare-models")
+def compare_models(
+    models: Annotated[
+        list[str],
+        typer.Argument(help="Two or more registered models; the first is the incumbent."),
+    ],
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param",
+            "-p",
+            help="Override MODEL.KEY=VALUE, e.g. lgbm.n_estimators=100; repeat for several.",
+        ),
+    ] = None,
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Read nothing dated after this (default: today)."
+    ),
+    start: str = typer.Option(
+        strategy_module.DEFAULT_START, "--start", help="First rebalance of the backtest."
+    ),
+    top_k: int = typer.Option(strategy_module.bl.TOP_K, "--top-k", min=1),
+    hold: int = typer.Option(strategy_module.bl.HOLD, "--hold", min=1),
+    test_size: int = typer.Option(
+        walkforward_module.TEST_SIZE, "--test-size", min=1, help="Dates per test window."
+    ),
+    min_train: int = typer.Option(
+        walkforward_module.MIN_TRAIN, "--min-train", min=1, help="Training dates fold 0 needs."
+    ),
+    train_size: int | None = typer.Option(
+        None, "--train-size", min=1, help="Rolling training window in dates (default: expanding)."
+    ),
+    report: bool = typer.Option(
+        False, "--report", help="Write the HTML page and open it in the browser."
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="Where --report writes (default: data/reports/compare_<a>_vs_<b>_<as-of>.html).",
+    ),
+    open_page: bool = typer.Option(
+        True, "--open/--no-open", help="Open the --report page in the default browser."
+    ),
+    doc: str | None = typer.Option(
+        None, "--doc", help="Also write the page as Markdown, e.g. docs/models/ridge_vs_lgbm.md."
+    ),
+) -> None:
+    """Train several models on identical features, splits and costs; compare them on one page.
+
+    Every model is trained walk-forward on the same dataset and backtested on the
+    same inputs, window, top-K, holding period and costs, beside one shared run
+    of day 38's baselines. The runs are then checked field by field (features,
+    label, fold boundaries, scored rows, date axis, costs); if any differ the
+    command fails instead of writing an unfair page. Each model is logged in
+    docs/trials.csv as `finmgr train` would log it.
+    """
+    names = list(dict.fromkeys(models))
+    if len(names) < 2:
+        raise typer.BadParameter("name at least two different models", param_hint="MODELS")
+    overrides: dict[str, dict[str, Any]] = {}
+    for raw in param or []:
+        target, dot, rest = raw.partition(".")
+        if not dot or target not in names:
+            raise typer.BadParameter(
+                f"expected MODEL.KEY=VALUE with MODEL one of {', '.join(names)}, got {raw!r}",
+                param_hint="--param",
+            )
+        overrides.setdefault(target, {}).update(_parse_params([rest]))
+    try:
+        for name in names:
+            model = models_module.create(name, **overrides.get(name, {}))
+            log.info("finmgr compare-models: resolved %r -> %r", name, model)
+    except models_module.UnknownModel as exc:
+        raise typer.BadParameter(str(exc), param_hint="MODELS") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--param") from exc
+
+    settings = load_settings()
+    costs = CostModel.from_settings(settings)
+    try:
+        point = store.as_date(as_of, "--as-of") or pit.LATEST
+        data = walkforward_module.load_dataset(as_of=point, settings=settings)
+        inputs = strategy_module.load_inputs(as_of=point, momentum=True, settings=settings)
+        h = headtohead_module.head_to_head(
+            names,
+            data,
+            inputs,
+            start=start,
+            top_k=top_k,
+            hold=hold,
+            costs=costs,
+            params=overrides,
+            test_size=test_size,
+            min_train_size=min_train,
+            train_size=train_size,
+            random_for=lambda run: compare_module.random_sharpes(
+                start=run.metrics.start, end=run.metrics.end
+            ),
+        )
+    except headtohead_module.UnfairComparison as exc:
+        log.error("finmgr compare-models: refusing an unfair comparison: %s", exc)
+        raise typer.Exit(code=1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        log.error("finmgr compare-models: %s", exc)
+        raise typer.Exit(code=1) from exc
+    logged = [strategy_module.log_run(h.runs[n], source="finmgr train") for n in names]
+
+    command = (
+        "finmgr compare-models "
+        + " ".join(names)
+        + "".join(f" -p {p}" for p in param or [])
+        + (f" --as-of {as_of}" if as_of else "")
+    )
+    table = Table(title=f"head to head: {' vs '.join(names)}")
+    head, rows = headtohead_report.side_by_side(h)
+    for i, column in enumerate(head):
+        table.add_column(column, justify="left" if i == 0 else "right")
+    for row in rows:
+        table.add_row(*row)
+    console.print(table)
+    for check in h.checks:
+        console.print(f"fair: {check.name}: {check.detail}", markup=False)
+    for line in headtohead_report.verdict_lines(h):
+        console.print("verdict: " + line.replace("**", ""), markup=False)
+
+    stamp = h.runs[names[0]].as_of
+    default = f"compare_{'_vs_'.join(names)}_{stamp.isoformat()}.html"
+    path = Path(out) if out else settings.data_dir / "reports" / default
+    if doc:
+        target = Path(doc)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            headtohead_report.headtohead_markdown(
+                h,
+                command=command,
+                page=_relative(path) if report else None,
+                n_variants=logged[-1].n_variants,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"comparison -> {target}")
+    if not report:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        headtohead_report.headtohead_html(h, command=f"{command} --report"), encoding="utf-8"
+    )
+    console.print(f"page -> {path}")
+    if open_page and not webbrowser.open(path.resolve().as_uri()):
+        log.warning("finmgr compare-models: no browser to open; the page is at %s", path)
 
 
 @app.command()

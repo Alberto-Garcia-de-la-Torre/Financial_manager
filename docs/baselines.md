@@ -39,6 +39,10 @@ these baselines on the same inputs and gives the model's paired Sharpe
 difference against the bar.
 
 * [ridge](models/ridge.md)
+* [lgbm](models/lgbm.md)
+* [ridge vs lgbm, head to head](models/ridge_vs_lgbm.md): both models on one
+  page, same features, folds, window and costs (checked), each against this bar
+  and the two against each other (`finmgr compare-models ridge lgbm --doc ...`)
 
 ## Setup
 

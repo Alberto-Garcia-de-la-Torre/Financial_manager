@@ -40,6 +40,27 @@ def coefficient_table(wf: WalkForward) -> pd.DataFrame:
     return out.reindex(out["mean"].abs().sort_values(ascending=False).index)
 
 
+def importance_table(wf: WalkForward) -> pd.DataFrame:
+    """Per feature: mean, last fold, min and max share of the total gain. Sorted by mean.
+
+    Empty for a model without importances (ridge reports coefficients instead).
+    """
+    imp = wf.importances()
+    if imp.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame(
+        {"mean": imp.mean(), "last": imp.iloc[-1], "min": imp.min(), "max": imp.max()}
+    )
+    return out.sort_values("mean", ascending=False)
+
+
+IMPORTANCE_NOTE = (
+    "Share of the total split gain per feature: how much of the loss reduction the "
+    "trees owe to it. It says which features the model used, not in which direction, "
+    "and a share is not a weight: it cannot be compared with a linear coefficient."
+)
+
+
 def _feature(column: str) -> str:
     return column.removesuffix("_rank")
 
@@ -88,6 +109,19 @@ def learned_html(wf: WalkForward) -> str:
             "<th>last fold</th><th>range over folds</th><th>folds positive</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
         )
+    imp = importance_table(wf)
+    if not imp.empty:
+        rows = "".join(
+            f"<tr><th>{html.escape(_feature(name))}</th><td>{r['mean']:.1%}</td>"
+            f"<td>{r['last']:.1%}</td><td>[{r['min']:.1%}, {r['max']:.1%}]</td></tr>"
+            for name, r in imp.iterrows()
+        )
+        parts.append(
+            f'<p class="note">{html.escape(IMPORTANCE_NOTE)}</p>'
+            '<table class="metrics"><thead><tr><th>Feature</th><th>mean share of gain</th>'
+            "<th>last fold</th><th>range over folds</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
     return "".join(parts)
 
 
@@ -103,6 +137,19 @@ def learned_markdown(wf: WalkForward) -> str:
             f"| {_feature(name)} | {r['mean']:+.4f} | {r['last']:+.4f} | "
             f"[{r['min']:+.4f}, {r['max']:+.4f}] | {r['positive']:.0%} |"
             for name, r in table.iterrows()
+        ]
+    imp = importance_table(wf)
+    if not imp.empty:
+        lines += [
+            IMPORTANCE_NOTE,
+            "",
+            "| Feature | Mean share of gain | Last fold | Range over folds |",
+            "|---|---:|---:|---|",
+        ]
+        lines += [
+            f"| {_feature(name)} | {r['mean']:.1%} | {r['last']:.1%} | "
+            f"[{r['min']:.1%}, {r['max']:.1%}] |"
+            for name, r in imp.iterrows()
         ]
     return "\n".join(lines) + "\n"
 

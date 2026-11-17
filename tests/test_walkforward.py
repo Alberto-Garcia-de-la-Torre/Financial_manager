@@ -144,7 +144,8 @@ def test_a_model_without_coefficients_still_trains(data: wfm.Dataset) -> None:
         min_train_size=120,
     )
     assert trees.coefficients().empty and len(trees.scores) > 0
-    assert "Feature" not in model_report.learned_markdown(trees)
+    md = model_report.learned_markdown(trees)
+    assert "Mean weight" not in md and "Mean share of gain" in md
 
 
 def test_too_little_history_is_an_error(data: wfm.Dataset) -> None:

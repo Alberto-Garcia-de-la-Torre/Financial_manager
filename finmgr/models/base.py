@@ -120,6 +120,24 @@ class EstimatorModel(ABC):
             return None
         return pd.Series(np.ravel(coef).astype(float), index=self._columns, name=self.name)
 
+    def importances(self) -> pd.Series | None:
+        """Per-feature importance of a fitted tree estimator, summing to 1; None otherwise.
+
+        Whatever the estimator reports as ``feature_importances_`` (LightGBM is
+        built to report total split *gain*), normalised so folds of different
+        sizes are comparable. Like :meth:`coefficients`, optional and not part of
+        :class:`Model`.
+        """
+        if self._fitted is None or self._columns is None:
+            raise NotFittedError(f"{self.name}: importances asked for before fit")
+        raw = getattr(self._fitted, "feature_importances_", None)
+        if raw is None:
+            return None
+        values = np.asarray(raw, dtype=float)
+        total = values.sum()
+        share = values / total if total > 0 else np.zeros_like(values)
+        return pd.Series(share, index=self._columns, name=self.name)
+
     def __repr__(self) -> str:
         args = ", ".join(f"{k}={v!r}" for k, v in self._params.items())
         return f"{type(self).__name__}({args})"
